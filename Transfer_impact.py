@@ -22,28 +22,32 @@ import sys
 
 
 
+
 """--------------------------------------------------------------------------------------------------ee
-Get (relative) sinogram out of RT-PLAN 
+Get (relative) sinogram out of RT-PLAN , ceci
 --------------------------------------------------------------------------------------------------"""
 def get_sinogram(plan):
     
-    NCP = plan.BeamSequence[0].NumberOfControlPoints
-    sinogram = np.zeros((NCP,64))
+    NCP = plan.BeamSequence[0].NumberOfControlPoints  #nb of control point 
+    sinogram = np.zeros((NCP,64)) #64 is the number of leaf pairs for our machines, it can be changed if needed for other machines (but it is not expected to be different) 
+                                   # 64 lames Ouvert ou Fermé
     
     """import plan sinogram value at each CP (use of try and except because some CP are empty)"""    
-    cp_sequence = plan.BeamSequence[0].ControlPointSequence
+    cp_sequence = plan.BeamSequence[0].ControlPointSequence #sequance of control point ( pour 20 rotation : 51 *20 + 1 = 1021 CP)
+                                                            # 51 pour nb de projection | 20 pour nb de rotation | +1 index 0 
+
     
-    for cp in range(NCP):
+    for cp in range(NCP): #python gère tout seul l'incrémentation de cp 
         try : 
                        
             """(300d,10a7) is the tag where the leaf openings commands are stored"""
-            tmp = cp_sequence[cp][0x300d,0x10a7].value
+            tmp = cp_sequence[cp][0x300d,0x10a7].value #obtient la position des lames 
     
-            tmp = tmp.decode('utf-8')
-            tmp = tmp.split('\\')
+            tmp = tmp.decode('utf-8')# devient une chaine 
+            tmp = tmp.split('\\')# devient une liste de chaines 
             
             """convert the string into float array""" 
-            sinogram[cp-1,:] = np.array(tmp,dtype=np.float64)
+            sinogram[cp-1,:] = np.array(tmp,dtype=np.float64)  #???????????????????? convertion en float mais pk cp-1  (: -> tout les elements sur cet axe)
             
         except KeyError:
             continue 
@@ -80,7 +84,7 @@ def delivery_info(plan) :
     delivery["PT"] = (delivery["GP"]/51.0)*1000.0   #Projection Time (ms)
     delivery["CS"] = float(plan.BeamSequence[0][0x300d,0x1080].value) #Couch Speed (mm/s)
     delivery["pitch"] = float(plan.BeamSequence[0][0x300d,0x1060].value) #Pitch
-    NCP = plan.BeamSequence[0].NumberOfControlPoints
+    NCP = plan.BeamSequence[0].NumberOfControlPoints  
     delivery["Nrot"] = (NCP-1)/51    #PNumber of gantry rotations
     delivery["TT"] = delivery["Nrot"]*delivery["GP"] #Treatment Time (s)
     delivery["CT"] = delivery["TT"]*delivery["CS"] #Couch Translation (mm)
@@ -105,7 +109,7 @@ def read_folder():
     fldpath = filedialog.askdirectory(title="Sélectionner le dossier contenant le(s) RT-PLAN")
     """
     fldpath = "rp/"
-    return fldpath
+    return fldpath  # chercher le dossier rp et l'ouvrir en arriere plan sans l'afficher pour l'utilisateur 
 
 """--------------------------------------------------------------------------------------------------
 Get the list of plans with the specified path
@@ -148,8 +152,10 @@ def get_error_shift(sinogram,delivery):
     thresh = 18 #max leaf transitionj time is taken as 18 ms accuray
     undisc_LCT = 0
     
-    cond1 = LOT_sino<(maxLOT-1)  #exclude LOT = PT
+    cond1 = LOT_sino<(maxLOT-1)  #exclude LOT = PT      ???pk pas juste LOT_sino < PT
+
     cond2 = LOT_sino>(PT-thresh) #LOT is a short LCT 
+
     row,col = np.where(cond1 & cond2)
     
     for i in range(len(row)):
@@ -177,40 +183,47 @@ def get_error_shift(sinogram,delivery):
 """--------------------------------------------------------------------------------------------------
 Calculate the estimated error for the list of plans in the chosen folder 
 --------------------------------------------------------------------------------------------------"""
-def calc_error_all(): 
+def calc_error_all(): # équivalent d'un pré main 
     
-    fld_path = read_folder() 
+    fld_path = read_folder() #recupérer le chemin du dossier contenant les plans
                 
-    plan_list = read_plan(fld_path)
+    plan_list = read_plan(fld_path) #plan_list contient la liste des chemins d'accès de tous les plans du dossier choisi
     
-    errors_all = []
+    errors_all = [] 
     
     for i in range(len(plan_list)):
         
-        plan = dcm.dcmread(plan_list[i])
+        plan = dcm.dcmread(plan_list[i]) #convertir le plan en objet pydicom pour pouvoir accéder à ses données facilement
         
-        tmp = plan_list[i].split('\\')
+        tmp = plan_list[i].split('\\') 
         
-        file_name = tmp[1]
+        file_name = tmp[1] 
                 
-        sinogram = get_sinogram(plan)
-        info = general_info(plan)
-        delivery = delivery_info(plan) 
+        sinogram = get_sinogram(plan) #appeler la fonction qui récupère le sinogramme du plan pour pouvoir calculer l'erreur de dose ensuite
+        info = general_info(plan) #appeler la fonction qui récupère les informations générales du plan pour pouvoir les afficher ensuite dans le tableau
+        delivery = delivery_info(plan) #appeler la fonction qui récupère les informations de livraison du plan pour pouvoir les afficher ensuite dans le tableau
         
-        data = get_error_shift(sinogram,delivery)
+        data = get_error_shift(sinogram,delivery) #appeler la fonction qui calcule l'erreur de dose pour ce plan en utilisant le sinogramme et les informations de livraison du plan
         
-        undisc_LCT = data[1]
+        undisc_LCT = data[1] #donnée 1 pourcentage de LCT non détecté 
         
-        error_plan = data[0]
-        
-        parts = info["patient_name"].split("^")
-        surname = parts[0]
+        error_plan = data[0] #donnée 0 pourcentage d'erreur de dose estimé pour ce plan
+            
+        parts = info["patient_name"].split("^") #donner le nom du patient 
+        surname = parts[0] 
         
         name_id =  str(info["patient_id"]) + ' ' + surname
         
         plan_name = file_name
-        
-        errors_all.append([plan_name, name_id, undisc_LCT, error_plan])
+
+        ##
+        if undisc_LCT == 0.0:
+            affichage_uLCT = "0.0 ( image initiale )"
+        else:
+            affichage_uLCT = undisc_LCT
+        ##
+
+        errors_all.append([plan_name, name_id, affichage_uLCT, error_plan])
 
     return errors_all
 
@@ -219,32 +232,69 @@ def calc_error_all():
 """--------------------------------------------------------------------------------------------------
 Create scrollable table with tkinter to plot the supplemantary dose estimations 
 --------------------------------------------------------------------------------------------------"""
-def create_gui(root, data, columns):
-    tree = ttk.Treeview(root, columns=columns, show='headings')
+def create_gui(root, data, columns): 
+    ## =========================== modif 19/05/2026
+
+
+
+    style = ttk.Style()
+    style.theme_use("clam") # Thème plus moderne 
     
-    for col in columns:
+
+    style.configure("Treeview.Heading", font=('Arial', 10, 'bold'), background="#4a90e2", foreground="white")   #bg #4a90e2
+    
+
+    style.configure("Treeview", font=('Arial', 10), rowheight=30) 
+    
+
+    main_frame = tk.Frame(root, padx=20, pady=20)
+    main_frame.grid(row=1, column=0, sticky=tk.NSEW)
+
+    root.grid_rowconfigure(1, weight=1)
+    root.grid_columnconfigure(0, weight=1)
+
+    main_frame.grid_rowconfigure(0, weight=1)
+    main_frame.grid_columnconfigure(0, weight=1)
+
+
+    tree = ttk.Treeview(main_frame, columns=columns, show='headings')
+
+
+
+    ## ============================
+
+    for i, col in enumerate(columns):
         tree.heading(col, text=col)
-        tree.column(col, width=100, anchor='center') 
+
+        width = 250 if i < 2 else 150
+        tree.column(col, width=width, anchor='center') 
     
-    for row in data:
-        tree.insert('', 'end', values=row)
+
+    tree.tag_configure('pair', background="#f9f9f9")    # ligne pair et impair tableau 
+    tree.tag_configure('impair', background="#ffffff")
+    
+
+    for index, row in enumerate(data):
+        tag = 'pair' if index % 2 == 0 else 'impair'
+        tree.insert('', 'end', values=row, tags=(tag,))
     
     tree.grid(row=0, column=0, sticky=tk.NSEW) 
 
-    scrollbar_y = Scrollbar(root, orient=tk.VERTICAL, command=tree.yview)
+
+    scrollbar_y = ttk.Scrollbar(main_frame, orient=tk.VERTICAL, command=tree.yview)
     scrollbar_y.grid(row=0, column=1, sticky=tk.NS)  
     tree.configure(yscrollcommand=scrollbar_y.set)
 
-    scrollbar_x = Scrollbar(root, orient=tk.HORIZONTAL, command=tree.xview)
+    scrollbar_x = ttk.Scrollbar(main_frame, orient=tk.HORIZONTAL, command=tree.xview)
     scrollbar_x.grid(row=1, column=0, sticky=tk.EW) 
     tree.configure(xscrollcommand=scrollbar_x.set)
+
 
     def on_mousewheel(event):
         if event.delta > 0:
             tree.yview_scroll(-1, 'units')
         elif event.delta < 0:
             tree.yview_scroll(1, 'units')
-
     tree.bind('<MouseWheel>', on_mousewheel)
 
     return tree
@@ -255,8 +305,6 @@ Function that stops the tkinter interactive window job when closing the window
 def on_closing():
     root.destroy()
     sys.exit()
-    
-    
     
 """--------------------------------------------------------------------------------------------------
 Get the folder for output 
@@ -292,9 +340,7 @@ def get_out_filename():
     user_input = "output_data.xlsx"
     return user_input
 
-
-         
- 
+        
 """--------------------------------------------------------------------------------------------------
 *************************************       MAIN       **********************************************
 --------------------------------------------------------------------------------------------------"""
@@ -310,82 +356,15 @@ for sub_list in data:
 root = tk.Tk()
 root.title("Estimation des erreurs de dose")
 
-root.grid_rowconfigure(0, weight=1)
-root.grid_columnconfigure(0, weight=1)
+##============modif 19/05/2026
+root.geometry("1400x600")
+##============
 
-fig = create_gui(root, plot_lines, plot_cols)
+root.grid_rowconfigure(0, weight=1) 
+root.grid_columnconfigure(0, weight=1) 
 
-
-
-""" xlsx file writing with openpyxl"""
-wb = openpyxl.Workbook()
-ws = wb.active
-ws.title = "Supplementary dose results" 
-
-ws.append(plot_cols)
-
-for i in range(1,5):
-    cell = ws.cell(row=1,column=i)
-    cell.font = Font(bold=True)
-    cell.alignment = Alignment(horizontal='center', vertical='center')
-    
-
-for xcel_rows in data:
-    ws.append(xcel_rows)
-    
-for col in ws.columns:
-    max_length = 0
-    column_cells = list(col)  # Convertit la colonne en liste
-    if len(column_cells) < 3:  # Vérifie si la colonne a au moins 3 cellules
-        continue
-    
-    column = column_cells[2].column_letter
-    for cell in column_cells:
-        try:
-            if len(str(cell.value)) > max_length:
-                max_length = len(cell.value)
-        except:
-            pass
-    adjusted_width = (max_length + 2)
-    ws.column_dimensions[column].width = adjusted_width
-
-    
-out_fld = read_folder_out()
-out_file_name = get_out_filename()
-    
-output_filepath = os.path.join(out_fld,out_file_name)
-
-wb.save(output_filepath)
-
+fig = create_gui(root, plot_lines, plot_cols) 
 
 root.protocol("WM_DELETE_WINDOW", on_closing)
 
 root.mainloop()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
