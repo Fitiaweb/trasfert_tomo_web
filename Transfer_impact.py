@@ -25,27 +25,17 @@ Get (relative) sinogram out of RT-PLAN
 --------------------------------------------------------------------------------------------------"""
 def get_sinogram(plan):
     
-    NCP = plan.BeamSequence[0].NumberOfControlPoints  #nb of control point 
-    sinogram = np.zeros((NCP,64)) #64 is the number of leaf pairs for our machines, it can be changed if needed for other machines (but it is not expected to be different) 
-                                   # 64 lames Ouvert ou Fermé
+    NCP = plan.BeamSequence[0].NumberOfControlPoints  
+    sinogram = np.zeros((NCP,64)) 
     
-    """import plan sinogram value at each CP (use of try and except because some CP are empty)"""    
-    cp_sequence = plan.BeamSequence[0].ControlPointSequence #sequance of control point ( pour 20 rotation : 51 *20 + 1 = 1021 CP)
-                                                            # 51 pour nb de projection | 20 pour nb de rotation | +1 index 0 
+    cp_sequence = plan.BeamSequence[0].ControlPointSequence 
 
-    
-    for cp in range(NCP): #python gère tout seul l'incrémentation de cp 
+    for cp in range(NCP): 
         try : 
-                       
-            """(300d,10a7) is the tag where the leaf openings commands are stored"""
-            tmp = cp_sequence[cp][0x300d,0x10a7].value #obtient la position des lames 
-    
-            tmp = tmp.decode('utf-8')# devient une chaine 
-            tmp = tmp.split('\\')# devient une liste de chaines 
-            
-            """convert the string into float array""" 
-            sinogram[cp-1,:] = np.array(tmp,dtype=np.float64)  #???????????????????? convertion en float mais pk cp-1  (: -> tout les elements sur cet axe)
-            
+            tmp = cp_sequence[cp][0x300d,0x10a7].value 
+            tmp = tmp.decode('utf-8')
+            tmp = tmp.split('\\')
+            sinogram[cp-1,:] = np.array(tmp,dtype=np.float64)  
         except KeyError:
             continue 
         
@@ -66,22 +56,17 @@ def general_info(plan) :
     plan_info["plan_date"] = plan.RTPlanDate
     plan_info["manufacturer"] = plan.ManufacturerModelName
     
-    ##20/05/2026==================================================
-    # Mapping pour traduire les numéros de série en noms de machines 
     serial_mapping = {
-        "4010012": "Tomo4",
-        "210462": "Tomo2",
+        "4010012": "Tomo2", 
+        "210462": "Tomo4",  
         "4010710": "Tomo7"
     }
     
     try:
         raw_serial = str(plan.DeviceSerialNumber)
-        # On remplace par le nom usuel, ou on garde le numéro si inconnu
         plan_info["machine_nb"] = serial_mapping.get(raw_serial, raw_serial)
     except AttributeError:
         plan_info["machine_nb"] = "Inconnue"
-    #===========================================================
-
 
     return plan_info
 
@@ -92,20 +77,23 @@ Get delivery information (Gantry period, Nb of rotations, Couch Speed etc...) ou
 def delivery_info(plan) : 
 
     delivery = {}
-    delivery["GP"] = float(plan.BeamSequence[0][0x300d,0x1040].value) #Gantry Period (s)
-    delivery["PT"] = (delivery["GP"]/51.0)*1000.0   #Projection Time (ms)
-    delivery["CS"] = float(plan.BeamSequence[0][0x300d,0x1080].value) #Couch Speed (mm/s)
-    delivery["pitch"] = float(plan.BeamSequence[0][0x300d,0x1060].value) #Pitch
+    delivery["GP"] = float(plan.BeamSequence[0][0x300d,0x1040].value) 
+    delivery["PT"] = (delivery["GP"]/51.0)*1000.0   
+    delivery["CS"] = float(plan.BeamSequence[0][0x300d,0x1080].value) 
+    delivery["pitch"] = float(plan.BeamSequence[0][0x300d,0x1060].value) 
     NCP = plan.BeamSequence[0].NumberOfControlPoints  
-    delivery["Nrot"] = (NCP-1)/51    #PNumber of gantry rotations
-    delivery["TT"] = delivery["Nrot"]*delivery["GP"] #Treatment Time (s)
-    delivery["CT"] = delivery["TT"]*delivery["CS"] #Couch Translation (mm)
-    delivery["FW"] = round(delivery["CT"]/delivery["Nrot"]/delivery["pitch"]/10.0,1) #Field Width (cm)
-    delivery["TL"] = delivery["CT"] - delivery["FW"]*10.0 #Target Length (mm)
+    delivery["Nrot"] = (NCP-1)/51    
+    delivery["TT"] = delivery["Nrot"]*delivery["GP"] 
+    delivery["CT"] = delivery["TT"]*delivery["CS"] 
+    delivery["FW"] = round(delivery["CT"]/delivery["Nrot"]/delivery["pitch"]/10.0,1) 
+    delivery["TL"] = delivery["CT"] - delivery["FW"]*10.0 
 
-    ## delivery["DS"] =(float(plan.FractionGroupSequence[0].ReferencedBeamSequence[0].BeamDose) #Pour ecup la dose totale du plan (Gy)
+    try:
+        delivery["DS"] = float(plan.FractionGroupSequence[0].ReferencedBeamSequence[0].BeamDose)
+    except Exception:
+        delivery["DS"] = 0.0
 
-    delivery["TTDF"] = (float(plan.FractionGroupSequence[0].ReferencedBeamSequence[0].BeamDose))/delivery["TT"]*100.0 #Dose over time (cGy/s)
+    delivery["TTDF"] = (float(plan.FractionGroupSequence[0].ReferencedBeamSequence[0].BeamDose))/delivery["TT"]*100.0 
     
     return delivery
 
@@ -114,13 +102,6 @@ def delivery_info(plan) :
 Get the folder where RT-PLAN are stored 
 --------------------------------------------------------------------------------------------------""" 
 def read_folder():
-    """
-    root = tk.Tk()
-    root.withdraw()
-    root.attributes('-topmost', True) 
-
-    fldpath = filedialog.askdirectory(title="Sélectionner le dossier contenant le(s) RT-PLAN")
-    """
     fldpath = "rp/"
     return fldpath  
 
@@ -128,16 +109,12 @@ def read_folder():
 """--------------------------------------------------------------------------------------------------
 Get the list of plans with the specified path
 --------------------------------------------------------------------------------------------------"""
-#trie pour chercher les dossiers et les fichiers commençant par "RP" et finissant par ".dcm"
-
 def read_plan(fldpath):
     path_list = []
-
     for root, dirs, files in os.walk(fldpath):  
         for file in files:
             if file.startswith("RP") and file.endswith(".dcm"):  
                 path_list.append(os.path.join(root, file))  
-
     return path_list
 
 
@@ -161,11 +138,9 @@ def get_error_shift(sinogram,delivery):
     row,col = np.where(cond1 & cond2)
     
     for i in range(len(row)):
-        
         if row[i] < LOT_sino.shape[0]:            
             if (LOT_sino[row[i]+1,col[i]] > (PT-20)):
                 undisc_LCT = undisc_LCT+1 
-                
         else : 
             row[i] = -1 
             col[i] = -1 
@@ -186,26 +161,19 @@ Calculate the estimated error for the list of plans in the chosen folder
 def calc_error_all(): 
     
     fld_path = read_folder() 
-                
     plan_list = read_plan(fld_path) 
-    
     raw_data = [] 
     
     for i in range(len(plan_list)):
-        
         plan = dcm.dcmread(plan_list[i]) 
-        
         sinogram = get_sinogram(plan) 
         info = general_info(plan) 
         delivery = delivery_info(plan) 
-        
         data = get_error_shift(sinogram,delivery) 
         
         undisc_LCT = data[1] 
         error_plan = data[0] 
             
-        ##20/05/2026==================================================
-
         parts = info["patient_name"].split("^")  
         surname = parts[0] 
         first_name = parts[1] if len(parts) > 1 else "" 
@@ -213,7 +181,6 @@ def calc_error_all():
         name_id = f"{first_name} {surname}".strip()
         patient_id = str(info["patient_id"])
         
-
         try:
             plan_date = str(plan[0x0008, 0x0012].value)
         except KeyError:
@@ -230,7 +197,6 @@ def calc_error_all():
             except KeyError:
                 plan_time = "000000"
 
-        #===========================================================
         raw_data.append({
             'sort_key': plan_date + plan_time, 
             'plan_date': plan_date,
@@ -238,6 +204,7 @@ def calc_error_all():
             'name_id': name_id,
             'patient_id': patient_id,
             'machine_serial': info["machine_nb"],
+            'dose_fraction': delivery["DS"],
             'undisc_LCT': undisc_LCT,
             'error_plan': error_plan
         })
@@ -247,11 +214,58 @@ def calc_error_all():
     patient_display = raw_data[0]['name_id'] if len(raw_data) > 0 else "Patient Inconnu"
     id_display = raw_data[0]['patient_id'] if len(raw_data) > 0 else "ID Inconnu"
 
+    # Calcul de l'erreur globale finale (pour la sécurité des séances max)
+    total_cumulative_error = 0.0
+    for index, item in enumerate(raw_data):
+        if index > 0: 
+            total_cumulative_error += item['error_plan']
+
     errors_all = [] 
+    running_cumulative_error = 0.0 # NOUVEAU: Pour le suivi progressif ligne par ligne
     
     for index, item in enumerate(raw_data):
-        affichage_uLCT = item['undisc_LCT']
+        
+        error_plan_val = item['error_plan']
+        affichage_uLCT = f"{item['undisc_LCT']:.2f}"
+        affichage_dose = f"{item['dose_fraction']:.2f}"
+
+        commentaires = []
+        
+        if index == 0:
+            # Pour l'initiale, on cache les valeurs d'erreur
+            affichage_error_plan = "-"
+            affichage_cumul = "-"
+            affichage_seances = "-"
+            commentaire = "Plan de référence"
+        else:
+            # Ajout progressif à l'erreur cumulée
+            running_cumulative_error += error_plan_val
+            
+            affichage_error_plan = f"{error_plan_val:.2f}"
+            affichage_cumul = f"{running_cumulative_error:.2f}" # Affiche la progression
+            
+            # Le budget utilise toujours l'erreur TOTALE finale, c'est ce qui est important !
+            budget_restant = 10.0 - total_cumulative_error
+            
+            if error_plan_val > 0:
+                if budget_restant > 0:
+                    seances_restantes = int(budget_restant / error_plan_val)
+                    affichage_seances = f"{seances_restantes}"
+                else:
+                    affichage_seances = "0"
+            else:
+                affichage_seances = "Illimité"
+
+            # Alertes
+            if error_plan_val > 1.5:
+                commentaires.append("Dose/séance > 1.5%")
+            if total_cumulative_error >= 10.0:
+                commentaires.append("Seuil 10% DÉPASSÉ !")
+                
+            commentaire = " | ".join(commentaires)
+        
         machine_serial = item['machine_serial']
+        nom_patient = item['name_id']
         
         date_brute = item['plan_date']
         if len(date_brute) == 8:
@@ -272,9 +286,7 @@ def calc_error_all():
         else:
             date_affichage = datetime_formatee
 
-        # On ajoute la colonne machine_serial
-
-        errors_all.append([date_affichage, machine_serial, affichage_uLCT, item['error_plan']])
+        errors_all.append([date_affichage, nom_patient, machine_serial, affichage_dose, affichage_uLCT, affichage_error_plan, affichage_cumul, affichage_seances, commentaire])
 
     return patient_display, id_display, errors_all
 
@@ -309,19 +321,55 @@ def create_gui(root, data, columns, patient_name, patient_id):
 
     for i, col in enumerate(columns):
         tree.heading(col, text=col)
-        # On peut adapter la largeur en fonction des colonnes si besoin
-        width = 250 if "dose" not in col else 300 
+        # Ajustement des largeurs
+        if "Date" in col:
+            width = 180
+        elif "Nom" in col:
+            width = 150
+        elif "Machine" in col:
+            width = 90
+        elif "Dose" in col:
+            width = 130
+        elif "uLCT" in col or "Estimated" in col or "Erreur cumulée" in col:
+            width = 160 
+        elif "restantes" in col:
+            width = 140
+        elif "Commentaire" in col:
+            width = 250
+        else:
+            width = 100
+            
         tree.column(col, width=width, anchor='center') 
     
     tree.tag_configure('pair', background="#f9f9f9")    
     tree.tag_configure('impair', background="#ffffff")
-    tree.tag_configure('initiale', background="#d1e7dd", font=('Arial', 10, 'bold'))
-    
+    tree.tag_configure('initiale', background="#d1e7dd", font=('Arial', 10, 'bold')) 
+    tree.tag_configure('alerte', background="#ffebee", foreground="#d32f2f", font=('Arial', 10, 'bold'))
+
     for index, row in enumerate(data):
+        
+        is_alert = False
+        
+        # Pour déclencher l'alerte, on regarde si la dose > 1.5 ou si le commentaire dit "DÉPASSÉ"
+        if index > 0:
+            try:
+                est_dose = float(row[5])
+                if est_dose > 1.5:
+                    is_alert = True
+            except ValueError:
+                pass
+            
+            # Si le texte "DÉPASSÉ" apparaît dans la colonne Commentaire, on met en rouge
+            if "DÉPASSÉ" in row[8]:
+                is_alert = True
+
         if index == 0:
-            tag = 'initiale'
+            tag = 'initiale' 
         else:
-            tag = 'pair' if index % 2 == 0 else 'impair'
+            if is_alert:
+                tag = 'alerte'
+            else:
+                tag = 'pair' if index % 2 == 0 else 'impair'
             
         tree.insert('', 'end', values=row, tags=(tag,))
     
@@ -358,7 +406,6 @@ def read_folder_out():
     fldpath = "rp/"
     return fldpath
 
-
 """--------------------------------------------------------------------------------------------------
 Get output file name from user with tkinter 
 --------------------------------------------------------------------------------------------------"""
@@ -368,13 +415,12 @@ def get_out_filename():
 
 
 """--------------------------------------------------------------------------------------------------
-*************************************       MAIN       **********************************************
+************************************* MAIN       **********************************************
 --------------------------------------------------------------------------------------------------"""
 
 patient_name, patient_id, data = calc_error_all()
 
-# Mise à jour du nom de la colonne
-plot_cols = ["Date et Heure", "Machine", "uLCT (%)", "Estimated additional dose (%)"]
+plot_cols = ["Date Heure", "Nom", "Machine", "Dose / Fraction", "uLCT (%)", "Estimated dose/séance (%)", "Erreur cumulée (%)", "Séances max", "Commentaire"]
 
 plot_lines = []
 
@@ -382,9 +428,9 @@ for sub_list in data:
     plot_lines.append(sub_list)
     
 root = tk.Tk()
-root.title("Estimation des erreurs de dose")
+root.title("Estimation des erreurs de dose et Sécurité")
 
-root.geometry("1400x600")
+root.geometry("1650x600") 
 
 root.grid_rowconfigure(0, weight=0) 
 root.grid_rowconfigure(1, weight=1) 
