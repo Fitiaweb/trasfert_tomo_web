@@ -8,7 +8,7 @@ Modification :
 - To create a stand alone, simply : python .\setup.py build 
 
 
-
+- merci
 
 # Tomotherapy transfer impact
 
