@@ -12,7 +12,6 @@ from tkinter import ttk, Scrollbar, simpledialog
 import pydicom as dcm
 
 import os
-
 import numpy as np
 
 import openpyxl
@@ -21,10 +20,8 @@ from openpyxl.styles import Font, Alignment
 import sys
 
 
-
-
-"""--------------------------------------------------------------------------------------------------ee
-Get (relative) sinogram out of RT-PLAN , ceci
+"""--------------------------------------------------------------------------------------------------
+Get (relative) sinogram out of RT-PLAN
 --------------------------------------------------------------------------------------------------"""
 def get_sinogram(plan):
     
@@ -68,10 +65,25 @@ def general_info(plan) :
     plan_info["patient_sex"] = plan.PatientSex
     plan_info["plan_date"] = plan.RTPlanDate
     plan_info["manufacturer"] = plan.ManufacturerModelName
-    plan_info["machine_nb"] = plan.DeviceSerialNumber
     
-    return plan_info
+    ##20/05/2026==================================================
+    # Mapping pour traduire les numéros de série en noms de machines 
+    serial_mapping = {
+        "4010012": "Tomo4",
+        "210462": "Tomo2",
+        "4010710": "Tomo7"
+    }
+    
+    try:
+        raw_serial = str(plan.DeviceSerialNumber)
+        # On remplace par le nom usuel, ou on garde le numéro si inconnu
+        plan_info["machine_nb"] = serial_mapping.get(raw_serial, raw_serial)
+    except AttributeError:
+        plan_info["machine_nb"] = "Inconnue"
+    #===========================================================
 
+
+    return plan_info
 
 
 """--------------------------------------------------------------------------------------------------
@@ -90,17 +102,18 @@ def delivery_info(plan) :
     delivery["CT"] = delivery["TT"]*delivery["CS"] #Couch Translation (mm)
     delivery["FW"] = round(delivery["CT"]/delivery["Nrot"]/delivery["pitch"]/10.0,1) #Field Width (cm)
     delivery["TL"] = delivery["CT"] - delivery["FW"]*10.0 #Target Length (mm)
+
+    ## delivery["DS"] =(float(plan.FractionGroupSequence[0].ReferencedBeamSequence[0].BeamDose) #Pour ecup la dose totale du plan (Gy)
+
     delivery["TTDF"] = (float(plan.FractionGroupSequence[0].ReferencedBeamSequence[0].BeamDose))/delivery["TT"]*100.0 #Dose over time (cGy/s)
     
     return delivery
-
 
 
 """--------------------------------------------------------------------------------------------------
 Get the folder where RT-PLAN are stored 
 --------------------------------------------------------------------------------------------------""" 
 def read_folder():
-
     """
     root = tk.Tk()
     root.withdraw()
@@ -109,31 +122,21 @@ def read_folder():
     fldpath = filedialog.askdirectory(title="Sélectionner le dossier contenant le(s) RT-PLAN")
     """
     fldpath = "rp/"
-    return fldpath  # chercher le dossier rp et l'ouvrir en arriere plan sans l'afficher pour l'utilisateur 
+    return fldpath  
+
 
 """--------------------------------------------------------------------------------------------------
 Get the list of plans with the specified path
 --------------------------------------------------------------------------------------------------"""
-"""def read_plan(fldpath):
-
-    plan_list = os.listdir(fldpath)
-
-    path_list = []
-
-    for i in range(len(plan_list)):
-        path_list.append(os.path.join(fldpath, plan_list[i]))
-
-    return path_list """
-
-
+#trie pour chercher les dossiers et les fichiers commençant par "RP" et finissant par ".dcm"
 
 def read_plan(fldpath):
     path_list = []
 
-    for root, dirs, files in os.walk(fldpath):  # Parcours récursif
+    for root, dirs, files in os.walk(fldpath):  
         for file in files:
-            if file.startswith("RP") and file.endswith(".dcm"):  # Filtrer les fichiers
-                path_list.append(os.path.join(root, file))  # Ajouter le chemin complet
+            if file.startswith("RP") and file.endswith(".dcm"):  
+                path_list.append(os.path.join(root, file))  
 
     return path_list
 
@@ -147,106 +150,152 @@ def get_error_shift(sinogram,delivery):
     LOT_sino = PT*sinogram
     maxLOT = np.max(LOT_sino)
     total_lot = np.sum(LOT_sino)
-    open_leaves_LOT = LOT_sino[np.nonzero(LOT_sino)]  #size of open leaves corresponds to N_open (see publication)
+    open_leaves_LOT = LOT_sino[np.nonzero(LOT_sino)]  
     
-    thresh = 18 #max leaf transitionj time is taken as 18 ms accuray
+    thresh = 18 
     undisc_LCT = 0
     
-    cond1 = LOT_sino<(maxLOT-1)  #exclude LOT = PT      ???pk pas juste LOT_sino < PT
-
-    cond2 = LOT_sino>(PT-thresh) #LOT is a short LCT 
+    cond1 = LOT_sino<(maxLOT-1)  
+    cond2 = LOT_sino>(PT-thresh) 
 
     row,col = np.where(cond1 & cond2)
     
     for i in range(len(row)):
         
-        if row[i] < LOT_sino.shape[0]:           
+        if row[i] < LOT_sino.shape[0]:            
             if (LOT_sino[row[i]+1,col[i]] > (PT-20)):
                 undisc_LCT = undisc_LCT+1 
-                #iterate if current LOT is in the range PT-18ms AND next or previous LOT (for a given leaf) is in the range PT-20ms
-                #use of PT-20 ms because mean latency offset of our machines is 2ms
                 
         else : 
             row[i] = -1 
             col[i] = -1 
             
-    filtered_row = row[row>(-0.5)] #only get the sinograms entries corresponding to short LCT
+    filtered_row = row[row>(-0.5)] 
     filtered_col = col[col>(-0.5)]
     extra_time = 0  
     
     for i in range(len(filtered_row)-1):
-        extra_time = extra_time + (PT - LOT_sino[filtered_row[i],filtered_col[i]])  # add additional time to get the sum of it
+        extra_time = extra_time + (PT - LOT_sino[filtered_row[i],filtered_col[i]])  
 
-    return ((extra_time/total_lot)*100), ((undisc_LCT/(len(open_leaves_LOT)))*100) # return the percentage of this extra time compared to sum of all LOTs
+    return ((extra_time/total_lot)*100), ((undisc_LCT/(len(open_leaves_LOT)))*100) 
             
 
 """--------------------------------------------------------------------------------------------------
 Calculate the estimated error for the list of plans in the chosen folder 
 --------------------------------------------------------------------------------------------------"""
-def calc_error_all(): # équivalent d'un pré main 
+def calc_error_all(): 
     
-    fld_path = read_folder() #recupérer le chemin du dossier contenant les plans
+    fld_path = read_folder() 
                 
-    plan_list = read_plan(fld_path) #plan_list contient la liste des chemins d'accès de tous les plans du dossier choisi
+    plan_list = read_plan(fld_path) 
     
-    errors_all = [] 
+    raw_data = [] 
     
     for i in range(len(plan_list)):
         
-        plan = dcm.dcmread(plan_list[i]) #convertir le plan en objet pydicom pour pouvoir accéder à ses données facilement
+        plan = dcm.dcmread(plan_list[i]) 
         
-        tmp = plan_list[i].split('\\') 
+        sinogram = get_sinogram(plan) 
+        info = general_info(plan) 
+        delivery = delivery_info(plan) 
         
-        file_name = tmp[1] 
-                
-        sinogram = get_sinogram(plan) #appeler la fonction qui récupère le sinogramme du plan pour pouvoir calculer l'erreur de dose ensuite
-        info = general_info(plan) #appeler la fonction qui récupère les informations générales du plan pour pouvoir les afficher ensuite dans le tableau
-        delivery = delivery_info(plan) #appeler la fonction qui récupère les informations de livraison du plan pour pouvoir les afficher ensuite dans le tableau
+        data = get_error_shift(sinogram,delivery) 
         
-        data = get_error_shift(sinogram,delivery) #appeler la fonction qui calcule l'erreur de dose pour ce plan en utilisant le sinogramme et les informations de livraison du plan
-        
-        undisc_LCT = data[1] #donnée 1 pourcentage de LCT non détecté 
-        
-        error_plan = data[0] #donnée 0 pourcentage d'erreur de dose estimé pour ce plan
+        undisc_LCT = data[1] 
+        error_plan = data[0] 
             
-        parts = info["patient_name"].split("^") #donner le nom du patient 
+        ##20/05/2026==================================================
+
+        parts = info["patient_name"].split("^")  
         surname = parts[0] 
+        first_name = parts[1] if len(parts) > 1 else "" 
         
-        name_id =  str(info["patient_id"]) + ' ' + surname
+        name_id = f"{first_name} {surname}".strip()
+        patient_id = str(info["patient_id"])
         
-        plan_name = file_name
 
-        ##
-        if undisc_LCT == 0.0:
-            affichage_uLCT = "0.0 ( image initiale )"
+        try:
+            plan_date = str(plan[0x0008, 0x0012].value)
+        except KeyError:
+            try:
+                plan_date = str(plan[0x300A, 0x0006].value)
+            except KeyError:
+                plan_date = "00000000" 
+
+        try:
+            plan_time = str(plan[0x0008, 0x0013].value)
+        except KeyError:
+            try:
+                plan_time = str(plan[0x300A, 0x0007].value)
+            except KeyError:
+                plan_time = "000000"
+
+        #===========================================================
+        raw_data.append({
+            'sort_key': plan_date + plan_time, 
+            'plan_date': plan_date,
+            'plan_time': plan_time,
+            'name_id': name_id,
+            'patient_id': patient_id,
+            'machine_serial': info["machine_nb"],
+            'undisc_LCT': undisc_LCT,
+            'error_plan': error_plan
+        })
+
+    raw_data.sort(key=lambda x: x['sort_key'])
+
+    patient_display = raw_data[0]['name_id'] if len(raw_data) > 0 else "Patient Inconnu"
+    id_display = raw_data[0]['patient_id'] if len(raw_data) > 0 else "ID Inconnu"
+
+    errors_all = [] 
+    
+    for index, item in enumerate(raw_data):
+        affichage_uLCT = item['undisc_LCT']
+        machine_serial = item['machine_serial']
+        
+        date_brute = item['plan_date']
+        if len(date_brute) == 8:
+            date_formatee = f"{date_brute[6:8]}/{date_brute[4:6]}/{date_brute[0:4]}"
         else:
-            affichage_uLCT = undisc_LCT
-        ##
+            date_formatee = date_brute 
 
-        errors_all.append([plan_name, name_id, affichage_uLCT, error_plan])
+        time_brute = item['plan_time']
+        if len(time_brute) >= 6:
+            time_formatee = f"{time_brute[0:2]}:{time_brute[2:4]}:{time_brute[4:6]}"
+        else:
+            time_formatee = time_brute
 
-    return errors_all
+        datetime_formatee = f"{date_formatee} à {time_formatee}"
 
+        if index == 0:
+            date_affichage = f"{datetime_formatee} (Initiale)"
+        else:
+            date_affichage = datetime_formatee
+
+        # On ajoute la colonne machine_serial
+
+        errors_all.append([date_affichage, machine_serial, affichage_uLCT, item['error_plan']])
+
+    return patient_display, id_display, errors_all
 
 
 """--------------------------------------------------------------------------------------------------
 Create scrollable table with tkinter to plot the supplemantary dose estimations 
 --------------------------------------------------------------------------------------------------"""
-def create_gui(root, data, columns): 
-    ## =========================== modif 19/05/2026
-
-
+def create_gui(root, data, columns, patient_name, patient_id): 
+    
+    lbl_name = tk.Label(root, text=f"Patient : {patient_name}", font=('Arial', 14, 'bold'))
+    lbl_name.grid(row=0, column=0, sticky=tk.NW, padx=20, pady=(20, 0))
+    
+    lbl_id = tk.Label(root, text=f"ID : {patient_id}", font=('Arial', 14, 'bold'))
+    lbl_id.grid(row=0, column=0, sticky=tk.NE, padx=20, pady=(20, 0))
 
     style = ttk.Style()
-    style.theme_use("clam") # Thème plus moderne 
+    style.theme_use("clam") 
     
-
-    style.configure("Treeview.Heading", font=('Arial', 10, 'bold'), background="#4a90e2", foreground="white")   #bg #4a90e2
-    
-
+    style.configure("Treeview.Heading", font=('Arial', 10, 'bold'), background="#4a90e2", foreground="white")   
     style.configure("Treeview", font=('Arial', 10), rowheight=30) 
     
-
     main_frame = tk.Frame(root, padx=20, pady=20)
     main_frame.grid(row=1, column=0, sticky=tk.NSEW)
 
@@ -256,30 +305,27 @@ def create_gui(root, data, columns):
     main_frame.grid_rowconfigure(0, weight=1)
     main_frame.grid_columnconfigure(0, weight=1)
 
-
     tree = ttk.Treeview(main_frame, columns=columns, show='headings')
-
-
-
-    ## ============================
 
     for i, col in enumerate(columns):
         tree.heading(col, text=col)
-
-        width = 250 if i < 2 else 150
+        # On peut adapter la largeur en fonction des colonnes si besoin
+        width = 250 if "dose" not in col else 300 
         tree.column(col, width=width, anchor='center') 
     
-
-    tree.tag_configure('pair', background="#f9f9f9")    # ligne pair et impair tableau 
+    tree.tag_configure('pair', background="#f9f9f9")    
     tree.tag_configure('impair', background="#ffffff")
+    tree.tag_configure('initiale', background="#d1e7dd", font=('Arial', 10, 'bold'))
     
-
     for index, row in enumerate(data):
-        tag = 'pair' if index % 2 == 0 else 'impair'
+        if index == 0:
+            tag = 'initiale'
+        else:
+            tag = 'pair' if index % 2 == 0 else 'impair'
+            
         tree.insert('', 'end', values=row, tags=(tag,))
     
     tree.grid(row=0, column=0, sticky=tk.NSEW) 
-
 
     scrollbar_y = ttk.Scrollbar(main_frame, orient=tk.VERTICAL, command=tree.yview)
     scrollbar_y.grid(row=0, column=1, sticky=tk.NS)  
@@ -288,7 +334,6 @@ def create_gui(root, data, columns):
     scrollbar_x = ttk.Scrollbar(main_frame, orient=tk.HORIZONTAL, command=tree.xview)
     scrollbar_x.grid(row=1, column=0, sticky=tk.EW) 
     tree.configure(xscrollcommand=scrollbar_x.set)
-
 
     def on_mousewheel(event):
         if event.delta > 0:
@@ -310,14 +355,6 @@ def on_closing():
 Get the folder for output 
 --------------------------------------------------------------------------------------------------""" 
 def read_folder_out():
-
-    """
-    root = tk.Tk()
-    root.withdraw()
-    root.attributes('-topmost', True) 
-
-    fldpath = filedialog.askdirectory(title="Sélectionner le dossier pour stocker le fichier résultat")
-    """
     fldpath = "rp/"
     return fldpath
 
@@ -326,28 +363,19 @@ def read_folder_out():
 Get output file name from user with tkinter 
 --------------------------------------------------------------------------------------------------"""
 def get_out_filename():
-
-    """
-    root = tk.Tk()
-    root.withdraw() 
-    root.attributes('-topmost', True) 
-
-    # ask user to input 
-    user_input = simpledialog.askstring(title="Input", prompt="Entrez le nom du fichier xlsx de sortie:")
-    
-    user_input = user_input + ".xlsx"
-    """
     user_input = "output_data.xlsx"
     return user_input
 
-        
+
 """--------------------------------------------------------------------------------------------------
 *************************************       MAIN       **********************************************
 --------------------------------------------------------------------------------------------------"""
 
-data = calc_error_all()
+patient_name, patient_id, data = calc_error_all()
 
-plot_cols = ["ID and Plan name", "Name", "uLCT (%)", "Estimated additional dose (%)"] 
+# Mise à jour du nom de la colonne
+plot_cols = ["Date et Heure", "Machine", "uLCT (%)", "Estimated additional dose (%)"]
+
 plot_lines = []
 
 for sub_list in data: 
@@ -356,14 +384,13 @@ for sub_list in data:
 root = tk.Tk()
 root.title("Estimation des erreurs de dose")
 
-##============modif 19/05/2026
 root.geometry("1400x600")
-##============
 
-root.grid_rowconfigure(0, weight=1) 
+root.grid_rowconfigure(0, weight=0) 
+root.grid_rowconfigure(1, weight=1) 
 root.grid_columnconfigure(0, weight=1) 
 
-fig = create_gui(root, plot_lines, plot_cols) 
+fig = create_gui(root, plot_lines, plot_cols, patient_name, patient_id) 
 
 root.protocol("WM_DELETE_WINDOW", on_closing)
 
