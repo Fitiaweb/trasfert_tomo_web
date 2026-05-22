@@ -312,15 +312,44 @@ def analyser_et_afficher_tableau(fichiers_a_traiter):
         derniere_seance = raw_data[-1]
         if derniere_seance['Erreur Séance (%)'] > 0.0:
             erreurs = derniere_seance['Profil_Erreur']
-            angles = np.linspace(0, 2*np.pi, len(erreurs))
+            N_total = len(erreurs) # Nombre total de points dans le traitement
             
-            fig, ax = plt.subplots(subplot_kw={'projection': 'polar'}, figsize=(5, 5))
+            # Angles continus pour tracer la courbe entière
+            angles = np.linspace(0, 2 * np.pi, N_total, endpoint=False)
+            
+            # On ferme la boucle pour le tracé
+            angles_fermes = np.concatenate((angles, [angles[0]]))
+            erreurs_fermees = np.concatenate((erreurs, [erreurs[0]]))
+            
+            fig, ax = plt.subplots(subplot_kw={'projection': 'polar'}, figsize=(5.5, 5.5))
+            
             ax.set_theta_zero_location("N")
             ax.set_theta_direction(-1)
-            ax.fill(angles, erreurs, color='red', alpha=0.6)
-            ax.plot(angles, erreurs, color='red', linewidth=1)
-            st.pyplot(fig)
-            st.caption("Distribution de l'excès de dose par angle de projection.")
+            
+            max_err = np.max(erreurs)
+            ax.set_ylim(max_err * 1.4, 0)
+            
+            # Tracé de la courbe (utilise tous les points)
+            ax.fill_between(angles_fermes, 0, erreurs_fermees, color='#FF4B4B', alpha=0.7)
+            ax.plot(angles_fermes, erreurs_fermees, color='red', linewidth=1.5)
+            
+            # --- LE CORRECTIF EST ICI ---
+            # On génère exactement 51 positions pour les graduations
+            angles_51 = np.linspace(0, 2 * np.pi, 51, endpoint=False)
+            ax.set_xticks(angles_51)
+            
+            # On affiche les numéros de 1 à 51 sur ces positions (taille de police 6 pour ne pas surcharger)
+            ax.set_xticklabels([str(i+1) for i in range(51)], fontsize=6)
+            
+            # Masquer le fond gris s'il y en a un et retirer les labels radiaux
+            ax.set_facecolor('white')
+            ax.set_yticks([max_err * 0.25, max_err * 0.5, max_err * 0.75, max_err])
+            ax.set_yticklabels([]) 
+            
+            plt.tight_layout()
+            
+            st.pyplot(fig, use_container_width=False)
+            st.caption("Excès de dose ramené sur 1 rotation (51 projections).")
         else:
             st.success("Aucune erreur détectée sur la dernière séance.")
             
@@ -338,7 +367,7 @@ def analyser_et_afficher_tableau(fichiers_a_traiter):
 
 st.markdown("<h1 style='text-align: center;'>Suivi des doses Tomo</h1>", unsafe_allow_html=True)
 
-tab_in, tab_out = st.tabs(["Traiter les nouveaux plans (IN)", " Base de données globale (OUT)"])
+tab_in, tab_out = st.tabs(["Traiter les nouveaux plans (*IN*)", " Base de données globale (*OUT*)"])
 
 #===========================================================================================================
 
@@ -359,7 +388,7 @@ with tab_in:
     with col2:
         if st.button("Traiter les nouveaux plans", use_container_width=True):
             if len(fichiers_in) == 0:
-                st.warning(f"Aucun nouveau fichier trouvé dans le dossier {DIR_IN}.")
+                st.warning(f"Aucun nouveau fichier trouvé dans le dossier *IN*.")
             else:
                 with st.spinner("Analyse des nouveaux plans et récupération des historiques..."):
                     
@@ -393,7 +422,7 @@ with tab_in:
                     
                     if succes:
                         if doublons_ignores > 0:
-                            st.success(f" Traitement terminé ({doublons_ignores} doublon(s) ignoré(s)). Les fichiers ont été archivés.")
+                            st.success(f" Traitement terminé (**{doublons_ignores}** doublon(s) ignoré(s)). Les fichiers ont été archivés.")
                         else:
                             st.success(f"Traitement terminé. Les fichiers ont été archivés dans OUT.")
 
@@ -404,6 +433,10 @@ with tab_in:
 
 
 
+
+#======= Gestion des anciens plans  ========================================================================
+
+#======= Gestion des anciens plans  ========================================================================
 
 #======= Gestion des anciens plans  ========================================================================
 
@@ -426,20 +459,136 @@ with tab_out:
                 nom_propre = f"{nom_brut[1] if len(nom_brut) > 1 else ''} {nom_brut[0]}".strip()
                 patients_disponibles[pat_id] = f"{nom_propre} (ID: {pat_id})"
         
-        # Créer le menu déroulant avec la liste triée
+        # Créer le menu déroulant avec la liste globale triée
         liste_choix = sorted(list(patients_disponibles.values()))
-        patient_selectionne = st.selectbox("Sélectionnez un patient :", ["-- Choisir un patient --"] + liste_choix)
         
-        if patient_selectionne != "-- Choisir un patient --":
-            id_cible = patient_selectionne.split("ID: ")[1].replace(")", "")
+        # --- Barre de recherche ---
+        
+        # 1. On définit l'URL de la nouvelle icône (taille 25px pour un label)
+        new_icon_url = "https://img.icons8.com/?size=25&id=7eX13e1GI7bn&format=png&color=000000"
+
+        # 2. On affiche l'icône et le texte d'invite avec Markdown et HTML non sécurisé
+        # L'image est chargée en ligne, pas besoin de fichier local, comme demandé.
+        st.markdown(f' <img src="{new_icon_url}" style="height: 20px; vertical-align: middle;"> Rechercher par Nom, Prénom ou ID :', unsafe_allow_html=True)
+        
+        # 3. Le champ d'entrée de texte n'a plus de label direct, il utilise le placeholder
+        recherche = st.text_input("", placeholder="Ex: Dupont, Jean, ou 12345...")
+        
+        # Filtrer la liste si du texte est entré (insensible à la casse avec .lower())
+        if recherche:
+            liste_choix = [p for p in liste_choix if recherche.lower() in p.lower()]
             
-            with st.spinner("Chargement de l'historique..."):
-                fichiers_patient = []
-                for f in fichiers_out:
-                    if str(dcm.dcmread(f, stop_before_pixels=True).PatientID) == id_cible:
-                        fichiers_patient.append(f)
+        # Si la recherche ne donne rien
+        if len(liste_choix) == 0:
+            st.warning("Aucun patient ne correspond à cette recherche.")
+        else:
+            # Menu déroulant avec la liste (filtrée ou complète) conservant le choix par défaut
+            patient_selectionne = st.selectbox("Sélectionnez un patient :", ["-- Choisir un patient --"] + liste_choix)
+            
+            if patient_selectionne != "-- Choisir un patient --":
+                # Extraction de l'ID pour retrouver les fichiers DICOM
+                id_cible = patient_selectionne.split("ID: ")[1].replace(")", "")
                 
-                # Générer le tableau et les graphiques pour ce patient précis
-                analyser_et_afficher_tableau(fichiers_patient)
+                with st.spinner("Chargement de l'historique..."):
+                    fichiers_patient = []
+                    for f in fichiers_out:
+                        if str(dcm.dcmread(f, stop_before_pixels=True).PatientID) == id_cible:
+                            fichiers_patient.append(f)
+                    
+                    # Générer le tableau et les graphiques pour ce patient précis
+                    analyser_et_afficher_tableau(fichiers_patient)
+
+#===========================================================================================================
+
+
+
+#=============== Suppression dossier out ===================================================================
+
+#suppression des dossier du out pour eviter saturation du site et des données 
+
+    st.markdown("---")
+    st.markdown("###  Gestion de la base de données")
+
+    # 1. Initialisation de l'état de confirmation si il n'existe pas encore
+    if 'demande_suppression' not in st.session_state:
+        st.session_state.demande_suppression = False
+
+    # 2. Premier bouton : Déclencheur
+    if not st.session_state.demande_suppression:
+        if st.button("Supprimer le contenu du dossier *OUT*", use_container_width=True):
+            st.session_state.demande_suppression = True
+            st.rerun() # On relance pour afficher l'étape suivante
+
+    # 3. Étape de double vérification (ne s'affiche que si le bouton 1 a été cliqué)
+    if st.session_state.demande_suppression:
+        st.warning("**Double vérification demandée**")
+        
+        # Champ de saisie
+        phrase = st.text_input("Veuillez entrer la phrase **oui supprimer** pour déverrouiller l'action :")
+        
+        col_annuler, col_valider = st.columns(2)
+        
+        with col_annuler:
+            if st.button("Annuler", use_container_width=True):
+                st.session_state.demande_suppression = False
+                st.rerun()
+
+        with col_valider:
+            # Le bouton final de suppression n'est cliquable que si la phrase est exacte
+            if phrase == "oui supprimer":
+                if st.button("CONFIRMER LA SUPPRESSION DÉFINITIVE", type="primary", use_container_width=True):
+                    try:
+                        # Suppression des fichiers
+                        for filename in os.listdir(DIR_OUT):
+                            file_path = os.path.join(DIR_OUT, filename)
+                            if os.path.isfile(file_path):
+                                os.unlink(file_path)
+                        
+                        # Succès et réinitialisation
+                        st.success(" Dossier OUT vidé avec succès !")
+                        st.session_state.demande_suppression = False
+                        # On attend un petit peu pour que l'utilisateur voie le message de succès avant de rafraîchir
+                        import time
+                        time.sleep(2)
+                        st.rerun()
+                        
+                    except Exception as e:
+                        st.error(f"Erreur : {e}")
+            else:
+                # Bouton grisé/désactivé tant que la phrase n'est pas bonne
+                st.button("CONFIRMER LA SUPPRESSION ", disabled=True, use_container_width=True)
+
+
+
+
+
+#===========================================================================================================
+
+
+
+#===========  JAUGE DE STOCKAGE / PERFORMANCES     =========================================================
+
+    st.markdown("---")
+    st.markdown(" #### État de la base active (Performances)")
+    
+    # 1. On compte le nombre réel de fichiers DICOM archivés dans OUT
+    nb_fichiers_out = len(lire_fichiers_dossier(DIR_OUT))
+    LIMITE_MAX = 500
+    
+    # 2. Calcul du pourcentage pour la barre (plafonné à 1.0 maximum pour Streamlit)
+    pourcentage = min(nb_fichiers_out / LIMITE_MAX, 1.0)
+    
+    # 3. Affichage de la barre de progression
+    st.progress(pourcentage)
+    
+    # 4. Message dynamique avec alertes selon le volume de données
+    if nb_fichiers_out >= LIMITE_MAX:
+        st.error(f" **Seuil critique atteint ({nb_fichiers_out} / {LIMITE_MAX} fichiers).** Les performances de recherche et d'affichage sont dégradées. Veuillez vider le dossier OUT avant les prochains traitements.")
+    elif nb_fichiers_out >= (LIMITE_MAX * 0.8): # À partir de 400 fichiers
+        st.warning(f" **Volume élevé ({nb_fichiers_out} / {LIMITE_MAX} fichiers).** Pensez à vider le dossier prochainement pour maintenir une fluidité maximale dans le service.")
+    else:
+        st.success(f" **Système optimal ({nb_fichiers_out} / {LIMITE_MAX} fichiers).** La lecture des données et la génération des graphiques sont instantanées.")
+
+
 
 #===========================================================================================================
