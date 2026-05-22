@@ -1,0 +1,3 @@
+.\.venv\Scripts\python.exe -m pip install streamlit pandas pydicom openpyxl
+
+.\.venv\Scripts\python.exe -m streamlit run Transfer_impact.py
