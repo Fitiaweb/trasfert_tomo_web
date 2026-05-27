@@ -1,5 +1,4 @@
 #======= Import bibliothèque ===============================================================================
-
 import streamlit as st
 import pydicom as dcm
 import numpy as np
@@ -7,38 +6,19 @@ import pandas as pd
 import os
 import shutil
 import matplotlib.pyplot as plt
-
 #===========================================================================================================
-
-
-
 #======= Configuration de la page web ======================================================================
-
 st.set_page_config(page_title="Transfert Tomo", layout="wide") #titre page 
 st.sidebar.image("logo.png", use_container_width=True) #logo ( test )
 st.sidebar.markdown("---") #barre de séparation 
 st.sidebar.markdown("**Service de Physique Médicale**") #texte en bas de la barre latérale
-
 #===========================================================================================================
-
-
-
-
-
 #======= Création automatique des dossiers IN et OUT  ======================================================
-
 DIR_IN = "IN"
 DIR_OUT = "OUT"
 os.makedirs(DIR_IN, exist_ok=True) #fonctionne comme mkdir 
 os.makedirs(DIR_OUT, exist_ok=True)
-
 #===========================================================================================================
-
-
-
-
-
-
 #=======  Récupération sinogrammes    ======================================================================
 
 def get_sinogram(plan):
@@ -54,19 +34,8 @@ def get_sinogram(plan):
         except KeyError:
             continue 
     return sinogram 
-
 #===========================================================================================================
-
-
-
-
-
-
-
-
-
 #=======  Récupération Nom + Prénom + Machine     ==========================================================
-
 def general_info(plan): 
     plan_info = {} #stcoker les infos plans 
     plan_info["patient_id"] = str(plan.PatientID)
@@ -79,18 +48,8 @@ def general_info(plan):
     except AttributeError:
         plan_info["machine_nb"] = "Inconnue"
     return plan_info
-
 #===========================================================================================================
-
-
-
-
-
-
-
-
 #=======  Récupération Gantry + Projection + couch speed+ pitch + nb rot + temps de traitement + dose  =====
-
 def delivery_info(plan): 
     delivery = {}
     delivery["GP"] = float(plan.BeamSequence[0][0x300d,0x1040].value) #gantry periode
@@ -106,18 +65,8 @@ def delivery_info(plan):
     except Exception:
         delivery["DS"] = 0.0
     return delivery
-
 #===========================================================================================================
-
-
-
-
-
-
-
-
 #=======  Récupération erreur de dose en fct de projection    ==============================================
-
 def get_error_shift(sinogram,delivery):
     PT = delivery["PT"] # projection time 
     LOT_sino = PT*sinogram  #transforme mon sinogramm en sinogramme de LOT (Leaf Open Time) en ms
@@ -126,15 +75,13 @@ def get_error_shift(sinogram,delivery):
     open_leaves_LOT = LOT_sino[np.nonzero(LOT_sino)]  #enleve tout les 0 de ma matrice de LOT
     thresh = 18  #seuil de 18ms 
     undisc_LCT = 0
-    
-    
+       
     erreur_par_projection = np.zeros(LOT_sino.shape[0]) #creer une matrice pour stocker les erreurs de porjection
     
     cond1 = LOT_sino < (maxLOT-1)  #enlever toute les ouvertures de 100% 
     cond2 = LOT_sino > (PT-thresh) #si LOT>282ms alors il y aura une erreur de dose
     row,col = np.where(cond1 & cond2) #row = num de projection avec erreur de lame
-                                      #col = num de lame pas ferme 
-    
+                                      #col = num de lame pas ferme   
     for i in range(len(row)):
 
         if row[i] < (LOT_sino.shape[0] - 1):             
@@ -148,27 +95,18 @@ def get_error_shift(sinogram,delivery):
     filtered_col = col[col>(-0.5)]
     extra_time = 0  
     
-
     for i in range(len(filtered_row)-1):
         diff = (PT - LOT_sino[filtered_row[i],filtered_col[i]])
         extra_time += diff  #temsps d'extra ouvertures de lames pour toute la seance 
 
         erreur_par_projection[filtered_row[i]] += diff #temps d'extra ouvertures de lames pour chaque projection (51 projections)
-
     
     erreur_par_projection_pct = (erreur_par_projection / total_lot) * 100 # transforme tableau de ms -> en pourcentage d'erreur
 
 
     return ((extra_time/total_lot)*100), ((undisc_LCT/(len(open_leaves_LOT)))*100), erreur_par_projection_pct
-
 #===========================================================================================================
-
-
-
-
-
 #=======  Lire les fichiers    =============================================================================
-
 def lire_fichiers_dossier(dossier):
     fichiers_trouves = []
     for root, dirs, files in os.walk(dossier):  
@@ -176,16 +114,8 @@ def lire_fichiers_dossier(dossier):
             if file.startswith("RP") and file.endswith(".dcm"):  #si le dossier est bien un RP et que c'est un fichier DICOM
                 fichiers_trouves.append(os.path.join(root, file))
     return fichiers_trouves
-
 #===========================================================================================================
-
-
-
-
-
-
 #=======  Grand tableau   ==================================================================================
-
 def analyser_et_afficher_tableau(fichiers_a_traiter):
     raw_data = []
     plans_vus = set()
@@ -269,16 +199,8 @@ def analyser_et_afficher_tableau(fichiers_a_traiter):
             "Erreur Cumulée (%)": cumul_str, "Séances Restantes": seances_str,
             "Commentaire": commentaire, "_Alerte": alerte, "_Index": index, "_Cumul_Val": running_cumul_val
         })
-
 #===========================================================================================================
-
-
-
-
-
-
 #=======   Afichage des deuc graphes   =====================================================================
-
     c1, c2 = st.columns(2) #créer deux colonnes pour afficher les infos patient et ID à côté du tableau
     c1.info(f"**Patient :** {raw_data[0]['Patient']}")
     c2.info(f"**ID :** {raw_data[0]['ID']}")
@@ -286,11 +208,9 @@ def analyser_et_afficher_tableau(fichiers_a_traiter):
     df = pd.DataFrame(final_table_data) 
     
     def style_dataframe(row):
-        if row['_Index'] == 0: return ['background-color: #d1e7dd; font-weight: bold'] * len(row) #mettre en évidence plan init
+        if row['_Index'] == 0: return ['background-color: #f0f8ff ; font-weight: bold'] * len(row) #mettre en évidence plan init
         elif row['_Alerte']: return ['background-color: #ffebee; color: #d32f2f; font-weight: bold'] * len(row) #mettre en évidence les séances avec alerte
         return [''] * len(row)
-
-    
     styled_df = df.style.apply(style_dataframe, axis=1) 
     st.dataframe(
         styled_df, 
@@ -302,10 +222,8 @@ def analyser_et_afficher_tableau(fichiers_a_traiter):
             "_Cumul_Val": None
         }
     )
-
     st.markdown("---")
     col_graph1, col_graph2 = st.columns([1, 1])
-
 
     with col_graph1:
         st.subheader(" Évolution de l'Erreur Cumulée") #titre du graphique
@@ -347,9 +265,9 @@ def analyser_et_afficher_tableau(fichiers_a_traiter):
             
             ax.set_xticklabels([str(i+1) for i in range(51)], fontsize=6) #afficher les angles 
 
-            # ax.set_facecolor('white')
-            # ax.set_yticks([max_err * 0.25, max_err * 0.5, max_err * 0.75, max_err]) #
-            # ax.set_yticklabels([]) 
+            ax.set_facecolor('white') #force l'interieur du graphique à être blanc pour une meilleure lisibilité ( mode sombre )
+            ax.set_yticks([max_err * 0.25, max_err * 0.5, max_err * 0.75, max_err]) #
+            ax.set_yticklabels([]) 
             
             plt.tight_layout()
             
@@ -359,31 +277,12 @@ def analyser_et_afficher_tableau(fichiers_a_traiter):
             st.success("Aucune erreur détectée sur la dernière séance.")
             
     return doublons_ignores, True
-
 #===========================================================================================================
-
-
-
-
-
-
-
 #======= Création de deux onglets  =========================================================================
-
 st.markdown("<h1 style='text-align: center;'>Suivi des doses Tomo</h1>", unsafe_allow_html=True) #titre centré
-
 tab_in, tab_out = st.tabs(["Traiter les nouveaux plans (*IN*)", " Base de données globale (*OUT*)"]) #deux onglets 
-
 #===========================================================================================================
-
-
-
-
-
-
-
 #======= gestion des nouveaux plans ========================================================================
-
 with tab_in:
     st.markdown(f"<p style='text-align: center;'>Placez vos nouveaux plans dans le dossier <b>{DIR_IN}</b> puis cliquez sur le bouton.</p>", unsafe_allow_html=True)
     
@@ -414,9 +313,8 @@ with tab_in:
                 fichiers_a_traiter = fichiers_historique + fichiers_in
                 
                 doublons_ignores, succes = analyser_et_afficher_tableau(fichiers_a_traiter)
-                
-                # Déplacer les fichiers de IN vers OUT
-                for fichier in fichiers_in:
+                            
+                for fichier in fichiers_in: # Déplacer les fichiers de IN vers OUT
                     nom_fichier = os.path.basename(fichier)
                     chemin_dest = os.path.join(DIR_OUT, nom_fichier)
                     if os.path.exists(chemin_dest):
@@ -428,14 +326,8 @@ with tab_in:
                         st.success(f" Traitement terminé (**{doublons_ignores}** doublon(s) ignoré(s)). Les fichiers ont été archivés.")
                     else:
                         st.success(f"Traitement terminé. Les fichiers ont été archivés dans OUT.")
-
-
 #===========================================================================================================
-
-
-
 #======= Gestion des anciens plans  ========================================================================
-
 with tab_out:
     st.markdown("### Rechercher l'historique d'un patient")
     
@@ -447,23 +339,22 @@ with tab_out:
         patients_disponibles = {}
         for f in fichiers_out:
             plan_temporaire = dcm.dcmread(f, stop_before_pixels=True)
-            pat_id = str(plan_temporaire.PatientID)
+            pat_id = str(plan_temporaire.PatientID) #passer le num patient en chaine de caractère
             
             if pat_id not in patients_disponibles:
                 nom_brut = str(plan_temporaire.PatientName).split("^")
                 nom_propre = f"{nom_brut[1] if len(nom_brut) > 1 else ''} {nom_brut[0]}".strip()
                 patients_disponibles[pat_id] = f"{nom_propre} (ID: {pat_id})"
         
-        liste_choix = sorted(list(patients_disponibles.values()))
-        
-        # --- Barre de recherche ---
+        liste_choix = sorted(list(patients_disponibles.values())) #menu deroulant de tout les patients dans le OUT
+
         new_icon_url = "https://img.icons8.com/?size=25&id=7eX13e1GI7bn&format=png&color=000000"
         st.markdown(f' <img src="{new_icon_url}" style="height: 20px; vertical-align: middle;"> Rechercher par Nom, Prénom ou ID :', unsafe_allow_html=True)
         recherche = st.text_input("", placeholder="Ex: Dupont, Jean, ou 12345...")
+
         if recherche:
-            liste_choix = [p for p in liste_choix if recherche.lower() in p.lower()]
-            
-        
+            liste_choix = [p for p in liste_choix if recherche.lower() in p.lower()] #filtre les choix en fonction de la rechercher llower -> DUPONT -> dupont
+                   
         if len(liste_choix) == 0: # Si la recherche ne donne rien
             st.warning("Aucun patient ne correspond à cette recherche.")
         else:
@@ -473,42 +364,28 @@ with tab_out:
             if patient_selectionne != "-- Choisir un patient --":
                 id_cible = patient_selectionne.split("ID: ")[1].replace(")", "")
                 
-                with st.spinner("Chargement de l'historique..."):
+                with st.spinner("Chargement de l'historique..."): # chargement pendant le traitement
                     fichiers_patient = []
                     for f in fichiers_out:
                         if str(dcm.dcmread(f, stop_before_pixels=True).PatientID) == id_cible:
                             fichiers_patient.append(f)
                     analyser_et_afficher_tableau(fichiers_patient)
-
 #===========================================================================================================
-
-
-
-
 #=============== Suppression dossier out ===================================================================
-
-#suppression des dossier du out pour eviter saturation du site et des données 
-
     st.markdown("---")
     st.markdown("###  Gestion de la base de données")
 
-    # 1. Initialisation de l'état de confirmation si il n'existe pas encore
-    if 'demande_suppression' not in st.session_state:
+    if 'demande_suppression' not in st.session_state: #Initialisation de l'état de confirmation si il n'existe pas encore
         st.session_state.demande_suppression = False
 
-    # 2. Premier bouton : Déclencheur
     if not st.session_state.demande_suppression:
-        if st.button("Supprimer le contenu du dossier *OUT*", use_container_width=True):
+        if st.button("Supprimer le contenu du dossier *OUT*", use_container_width=True): # Premier bouton : Déclencheur
             st.session_state.demande_suppression = True
             st.rerun() # On relance pour afficher l'étape suivante
 
-    # 3. Étape de double vérification (ne s'affiche que si le bouton 1 a été cliqué)
-    if st.session_state.demande_suppression:
+    if st.session_state.demande_suppression: # Étape de double vérification (ne s'affiche que si le bouton 1 a été cliqué)
         st.warning("**Double vérification demandée**")
-        
-        # Champ de saisie
         phrase = st.text_input("Veuillez entrer la phrase **oui supprimer** pour déverrouiller l'action :")
-        
         col_annuler, col_valider = st.columns(2)
         
         with col_annuler:
@@ -517,20 +394,15 @@ with tab_out:
                 st.rerun()
 
         with col_valider:
-            # Le bouton final de suppression n'est cliquable que si la phrase est exacte
             if phrase == "oui supprimer":
                 if st.button("CONFIRMER LA SUPPRESSION DÉFINITIVE", type="primary", use_container_width=True):
                     try:
-                        # Suppression des fichiers
-                        for filename in os.listdir(DIR_OUT):
+                        for filename in os.listdir(DIR_OUT): # Suppression des fichiers
                             file_path = os.path.join(DIR_OUT, filename)
                             if os.path.isfile(file_path):
                                 os.unlink(file_path)
-                        
-                        # Succès et réinitialisation
-                        st.success(" Dossier OUT vidé avec succès !")
+                        st.success(" Dossier OUT vidé avec succès !") # Succès et réinitialisation
                         st.session_state.demande_suppression = False
-                        # On attend un petit peu pour que l'utilisateur voie le message de succès avant de rafraîchir
                         import time
                         time.sleep(2)
                         st.rerun()
@@ -538,40 +410,19 @@ with tab_out:
                     except Exception as e:
                         st.error(f"Erreur : {e}")
             else:
-                # Bouton grisé/désactivé tant que la phrase n'est pas bonne
                 st.button("CONFIRMER LA SUPPRESSION ", disabled=True, use_container_width=True)
-
-
-
-
-
 #===========================================================================================================
-
-
-
 #===========  JAUGE DE STOCKAGE / PERFORMANCES     =========================================================
-
     st.markdown("---")
-    st.markdown(" #### État de la base active (Performances)")
-    
-    # 1. On compte le nombre réel de fichiers DICOM archivés dans OUT
-    nb_fichiers_out = len(lire_fichiers_dossier(DIR_OUT))
+    st.markdown(" #### État du dossier OUT ")  
+    nb_fichiers_out = len(lire_fichiers_dossier(DIR_OUT)) #On compte le nombre réel de fichiers DICOM archivés dans OUT
     LIMITE_MAX = 500
-    
-    # 2. Calcul du pourcentage pour la barre (plafonné à 1.0 maximum pour Streamlit)
-    pourcentage = min(nb_fichiers_out / LIMITE_MAX, 1.0)
-    
-    # 3. Affichage de la barre de progression
-    st.progress(pourcentage)
-    
-    # 4. Message dynamique avec alertes selon le volume de données
+    pourcentage = min(nb_fichiers_out / LIMITE_MAX, 1.0) # calcul du pourcentage pour la barre
+    st.progress(pourcentage) # Affichage de la barre de progression
     if nb_fichiers_out >= LIMITE_MAX:
         st.error(f" **Seuil critique atteint ({nb_fichiers_out} / {LIMITE_MAX} fichiers).** Les performances de recherche et d'affichage sont dégradées. Veuillez vider le dossier OUT avant les prochains traitements.")
     elif nb_fichiers_out >= (LIMITE_MAX * 0.8): # À partir de 400 fichiers
         st.warning(f" **Volume élevé ({nb_fichiers_out} / {LIMITE_MAX} fichiers).** Pensez à vider le dossier prochainement pour maintenir une fluidité maximale dans le service.")
     else:
         st.success(f" **Système optimal ({nb_fichiers_out} / {LIMITE_MAX} fichiers).** La lecture des données et la génération des graphiques sont instantanées.")
-
-
-
 #===========================================================================================================
