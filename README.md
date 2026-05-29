@@ -1,11 +1,4 @@
 # Derived from Julien Seguret [repository](https://github.com/jseguret/tomotherapy-transfer-impact)
-
-**Modifications incorporated in this version:**
-- Open in VS Code: right-click on the directory --> Open with Code.
-- Automated file monitoring: looks recursively in the predefined `IN/` and `OUT/` directories.
-- Zero-clutter UI: No longer asks the user for an output directory, filename, or input directory.
-- Standalone compilation: To create a standalone executable, simply run: `python .\setup.py build`
-
 ---
 
 # Tomotherapy Transfer Impact Dashboard
