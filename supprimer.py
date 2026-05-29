@@ -1,7 +1,7 @@
 import sqlite3
 
 # Remplace par l'ID du patient que tu veux effacer
-ID_A_SUPPRIMER = "202526515" 
+ID_A_SUPPRIMER = "202605485" 
 
 conn = sqlite3.connect("tomo_database.db")
 cursor = conn.cursor()

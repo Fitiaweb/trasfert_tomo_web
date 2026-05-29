@@ -1,4 +1,4 @@
-#======= Import bibliothèques ===============================================================================
+#======= Import libraries ===============================================================================
 import streamlit as st
 import pydicom as dcm
 import numpy as np
@@ -11,18 +11,19 @@ import sqlite3
 import json
 #===========================================================================================================
 
-#======= Configuration de la page web ======================================================================
-st.set_page_config(page_title="Transfert Tomo", layout="wide")
+#======= Page Configuration ================================================================================
+st.set_page_config(page_title="Tomo Transfer", layout="wide")
 #===========================================================================================================
 
-#======= Création automatique des dossiers & Base de données ===============================================
-DIR_IN = "IN"
+#======= Automatic Folder & Database Setup =================================================================
+DIR_IN = "IN" #modifier ici si on veut venir chercher dans un autre dossier
 DIR_ARCHIVE = "ARCHIVES"
-DB_NAME = "tomo_database.db"
+DB_NAME = "tomo_database.db" #il creer la base de donnée tout seul 
 
-os.makedirs(DIR_IN, exist_ok=True) 
-os.makedirs(DIR_ARCHIVE, exist_ok=True)
+os.makedirs(DIR_IN, exist_ok=True)  #creer le dossier IN s'il n'existe pas, et ne fait rien s'il existe déjà
+os.makedirs(DIR_ARCHIVE, exist_ok=True) #creer le dossier ARCHIVES s'il n'existe pas, et ne fait rien s'il existe déjà
 
+    #les tableaux sont en if not exists, donc ils ne seront créés qu'une seule fois, même si la fonction est appelée plusieurs fois.
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -30,23 +31,24 @@ def init_db():
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS PATIENTS (
         Patient_ID TEXT PRIMARY KEY,
-        Nom_Complet TEXT
+        Full_Name TEXT
     )
     ''')
-    
     cursor.execute('''
-    CREATE TABLE IF NOT EXISTS SEANCES (
-        Seance_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+    CREATE TABLE IF NOT EXISTS SESSIONS (
+        Session_ID INTEGER PRIMARY KEY AUTOINCREMENT,
         Patient_ID TEXT,
         DICOM_SOP_UID TEXT UNIQUE,
-        Date_Heure TEXT,
-        Date_Affichee TEXT,
+        Date_Time TEXT,
+        Display_Date TEXT,
         Machine TEXT,
         Dose_Gy REAL,
         Nb_Frac INTEGER,
         uLCT REAL,
-        Erreur_pct REAL,
-        Profil_JSON TEXT,
+        Error_pct REAL,
+        Profile_JSON TEXT,
+        CS_mm_s REAL,    -- NOUVELLE COLONNE
+        GP_s REAL,       -- NOUVELLE COLONNE
         FOREIGN KEY (Patient_ID) REFERENCES PATIENTS(Patient_ID)
     )
     ''')
@@ -56,23 +58,23 @@ def init_db():
 init_db()
 #===========================================================================================================
 
-#=======  Récupération sinogrammes    ======================================================================
+#======= Sinogram Extraction ===============================================================================
 def get_sinogram(plan):
-    NCP = plan.BeamSequence[0].NumberOfControlPoints
+    NCP = plan.BeamSequence[0].NumberOfControlPoints #Nombre de points de contrôle (NCP)
     sinogram = np.zeros((NCP,64)) 
     cp_sequence = plan.BeamSequence[0].ControlPointSequence 
 
     for cp in range(NCP): 
         try : 
-            tmp = cp_sequence[cp][0x300d,0x10a7].value 
-            tmp = tmp.decode('utf-8').strip('\x00').split('\\') 
-            sinogram[cp-1,:] = np.array(tmp,dtype=np.float64) 
+            tmp = cp_sequence[cp][0x300d,0x10a7].value #On récupère la valeur brute du sinogramme pour ce point de contrôle
+            tmp = tmp.decode('utf-8').strip('\x00').split('\\') #convertir 
+            sinogram[cp-1,:] = np.array(tmp,dtype=np.float64) #On remplit la ligne correspondante du sinogramme
         except KeyError:
             continue 
     return sinogram 
 #===========================================================================================================
 
-#=======  Récupération Nom + Prénom + Machine  =============================================================
+#======= Patient & Machine Info ============================================================================
 def general_info(plan): 
     plan_info = {} 
     plan_info["patient_id"] = str(plan.PatientID)
@@ -83,49 +85,49 @@ def general_info(plan):
         raw_serial = str(plan.DeviceSerialNumber) 
         plan_info["machine_nb"] = serial_mapping.get(raw_serial, raw_serial)
     except AttributeError:
-        plan_info["machine_nb"] = "Inconnue"
+        plan_info["machine_nb"] = "Unknown"
     return plan_info
 #===========================================================================================================
 
-#=======  Récupération paramètres physiques  ===============================================================
+#======= Physics Parameters Extraction =====================================================================
 def delivery_info(plan): 
     delivery = {}
-    delivery["GP"] = float(plan.BeamSequence[0][0x300d,0x1040].value) 
-    delivery["PT"] = (delivery["GP"]/51.0)*1000.0   
-    delivery["CS"] = float(plan.BeamSequence[0][0x300d,0x1080].value) 
-    delivery["pitch"] = float(plan.BeamSequence[0][0x300d,0x1060].value) 
+    delivery["GP"] = float(plan.BeamSequence[0][0x300d,0x1040].value) #Gantry Period (GP) en secondes
+    delivery["PT"] = (delivery["GP"]/51.0)*1000.0   #temps d'une projection en ms
+    delivery["CS"] = float(plan.BeamSequence[0][0x300d,0x1080].value) #vitesse de la table en mm/s
+    delivery["pitch"] = float(plan.BeamSequence[0][0x300d,0x1060].value) #pitch = (vitesse_table * GP)
     NCP = plan.BeamSequence[0].NumberOfControlPoints  
-    delivery["Nrot"] = (NCP-1)/51   
-    delivery["TT"] = delivery["Nrot"]*delivery["GP"] 
+    delivery["Nrot"] = (NCP-1)/51   #nombre de rotations complètes
+    delivery["TT"] = delivery["Nrot"]*delivery["GP"] #temps totale de traitement en secondes
     
     try:
-        delivery["DS"] = float(plan.FractionGroupSequence[0].ReferencedBeamSequence[0].BeamDose) 
-        delivery["Nb_Frac"] = int(plan.FractionGroupSequence[0].NumberOfFractionsPlanned) 
+        delivery["DS"] = float(plan.FractionGroupSequence[0].ReferencedBeamSequence[0].BeamDose) #Dose prescrite par séance en Gy
+        delivery["Nb_Frac"] = int(plan.FractionGroupSequence[0].NumberOfFractionsPlanned) #Nombre de séances prévues par le médecin
     except Exception:
         delivery["DS"] = 0.0
         delivery["Nb_Frac"] = 1
     return delivery
 #===========================================================================================================
 
-#=======  Calcul des erreurs    ============================================================================
-def get_error_shift(sinogram,delivery):
+#======= Error Calculation =================================================================================
+def get_error_shift(sinogram, delivery):
     PT = delivery["PT"] 
-    LOT_sino = PT*sinogram  
-    maxLOT = np.max(LOT_sino) 
-    total_lot = np.sum(LOT_sino) 
-    open_leaves_LOT = LOT_sino[np.nonzero(LOT_sino)]  
+    LOT_sino = PT*sinogram  #On convertit le sinogramme en LOT (Leaf Opening Time) en multipliant par le temps d'une projection (PT)
+    maxLOT = np.max(LOT_sino) #temps max ouvert 
+    total_lot = np.sum(LOT_sino) #somme des LOT
+    open_leaves_LOT = LOT_sino[np.nonzero(LOT_sino)]  # On prend uniquement les LOT non nul 
     thresh = 18  
     undisc_LCT = 0
         
-    erreur_par_projection = np.zeros(LOT_sino.shape[0]) 
+    error_per_projection = np.zeros(LOT_sino.shape[0]) 
     
-    cond1 = LOT_sino < (maxLOT-1)  
-    cond2 = LOT_sino > (PT-thresh) 
-    row,col = np.where(cond1 & cond2) 
-                                      
+    cond1 = LOT_sino < (maxLOT-1)  #lames totalement ouvert 
+    cond2 = LOT_sino > (PT-thresh) #lames ouvert mais superieur au seuil
+    row, col = np.where(cond1 & cond2) #row = numero projection et col = numero de la lame
+                                       
     for i in range(len(row)):
         if row[i] < (LOT_sino.shape[0] - 1):             
-            if (LOT_sino[row[i]+1,col[i]] > (PT-20)): 
+            if (LOT_sino[row[i]+1, col[i]] > (PT-20)): # Vérifie détection de latence moteur MLC
                 undisc_LCT += 1 
         else: 
             row[i] = -1 
@@ -136,124 +138,123 @@ def get_error_shift(sinogram,delivery):
     extra_time = 0  
     
     for i in range(len(filtered_row)-1):
-        diff = (PT - LOT_sino[filtered_row[i],filtered_col[i]])
-        extra_time += diff  
-        erreur_par_projection[filtered_row[i]] += diff 
+        diff = (PT - LOT_sino[filtered_row[i], filtered_col[i]]) #calcul de l'excès de temps d'ouverture pour cette projection et cette lame
+        extra_time += diff  #temps total d'excès d'ouverture accumulé sur tout le traitement
+        error_per_projection[filtered_row[i]] += diff 
     
-    erreur_par_projection_pct = (erreur_par_projection / total_lot) * 100 
-    return ((extra_time/total_lot)*100), ((undisc_LCT/(len(open_leaves_LOT)))*100), erreur_par_projection_pct
+    error_per_projection_pct = (error_per_projection / total_lot) * 100 
+    return ((extra_time/total_lot)*100), ((undisc_LCT/(len(open_leaves_LOT)))*100), error_per_projection_pct
 #===========================================================================================================
 
-#=======  Lire les fichiers    =============================================================================
-def lire_fichiers_dossier(dossier):
-    fichiers_trouves = []
-    for root, dirs, files in os.walk(dossier):  
+#======= File Reading ======================================================================================
+def read_files_in_directory(directory):
+    files_found = []
+    for root, dirs, files in os.walk(directory):  
         for file in files:
             # On accepte désormais les fichiers commençant par "RP" OU "RTPLAN"
-            if file.startswith(("RP", "RTPLAN")) and file.endswith(".dcm"):  
-                fichiers_trouves.append(os.path.join(root, file))
-    return fichiers_trouves
+            if file.startswith(("RP", "RTPLAN")) and file.endswith(".dcm"):  #au cas ou si le dossier à un autre nom il faudra modifier 
+                files_found.append(os.path.join(root, file))
+    return files_found
 #===========================================================================================================
 
-#=======  Moteur d'affichage (Le "Peintre") ================================================================
-def afficher_dashboard(raw_data):
+#======= Dashboard Engine ==================================================================================
+def display_dashboard(raw_data):
     if not raw_data:
         st.warning("Aucune donnée à afficher pour ce patient.")
         return
 
-    dose_cumulee_totale = 0.0
-    final_table_data = []
+    total_cumulated_dose = 0.0 #initialize cumulative dose variable
+    final_table_data = [] 
     
     try:
-        dose_nominale_ref = raw_data[0]['Dose (Gy)']
+        dose_nominal_ref = raw_data[0]['Dose (Gy)']
         nb_frac_ref = raw_data[0]['Nb_Frac']
-        budget_total_Gy = (dose_nominale_ref * nb_frac_ref) + 0.5 
+        total_budget_Gy = (dose_nominal_ref * nb_frac_ref) + 0.5 #SEUIL MODIFIABLE SELON LA TOLERANCE ACCEPTABLE (ex: 0.5 Gy)
     except:
-        budget_total_Gy = 0.0
+        total_budget_Gy = 0.0
+        nb_frac_ref = 1
 
     for index, item in enumerate(raw_data):
-        error_seance_pct = item['Erreur Séance (%)']
-        dose_nominale = item['Dose (Gy)']
+        error_session_pct = item['Session Error (%)']
+        dose_nominal = item['Dose (Gy)']
         
-        dose_reelle_seance = dose_nominale * (1 + (error_seance_pct / 100.0))
-        
+        actual_dose_session = dose_nominal * (1 + (error_session_pct / 100.0)) #calcul de la dose réelle délivrée en tenant compte de l'erreur de séance
         
         if index == 0:
-            date_affiche = item['Date'] + " (Initiale)"
-            dose_cumulee_totale += dose_nominale 
-            budget_restant = budget_total_Gy - dose_cumulee_totale
-            seances_max_possibles = int(budget_restant / dose_nominale) if dose_nominale > 0 else 0
-            
-            
-            seances_totales = 1 + seances_max_possibles 
-            
-            cumul_str = f"{dose_cumulee_totale:.2f}"
-            commentaire = f"Budget prescript : {budget_total_Gy:.2f} Gy"
-            alerte = False
-            running_cumul_val = dose_cumulee_totale
+            date_display = item['Date'] + " (Initiale)" #on marque la première séance pour la différencier visuellement
+            total_cumulated_dose += dose_nominal #pour la première séance, on considère que la dose délivrée correspond à la dose prescrite
+            cumul_str = f"{total_cumulated_dose:.2f}"
+            comment = f"Budget prescript : {total_budget_Gy:.2f} Gy"
+            alert = False
+            running_cumul_val = total_cumulated_dose
             
             final_table_data.append({
-                "Date": date_affiche, "Machine": item['Machine'],
-                "Dose Prévue (Gy)": f"{dose_nominale:.2f}", 
+                "Date": date_display, "Machine": item['Machine'],
+                "Planned Dose (Gy)": f"{dose_nominal:.2f}", 
                 "uLCT (%)": f"{item['uLCT (%)']:.2f}",
-                "Erreur Séance (%)": "-",
-                "Dose Délivrée (Gy)": "-", 
-                "Dose Cumulée (Gy)": cumul_str, 
-                "Séances Prévue ": str(seances_totales), 
-                "Commentaire": commentaire, 
-                "_Alerte": alerte, "_Index": index, "_Cumul_Val": running_cumul_val, "_Budget_Total": budget_total_Gy
+                "Session Error (%)": "-",
+                "Delivered Dose (Gy)": "-", 
+                "Cumulated Dose (Gy)": cumul_str, 
+                "Comment": comment, 
+                "_Alert": alert, "_Index": index, "_Cumul_Val": running_cumul_val, "_Budget_Total": total_budget_Gy
             })
         else:
-            dose_cumulee_totale += dose_reelle_seance
-            budget_restant = budget_total_Gy - dose_cumulee_totale
-            
-            if dose_reelle_seance > 0 and budget_restant > 0:
-                seances_max_possibles = max(0, int(budget_restant / dose_reelle_seance))
-            else:
-                seances_max_possibles = 0
+            total_cumulated_dose += actual_dose_session
                 
+            running_cumul_val = total_cumulated_dose
+            cumul_str = f"{total_cumulated_dose:.2f}"
             
-            seances_totales = (index + 1) + seances_max_possibles
-                
-            running_cumul_val = dose_cumulee_totale
-            cumul_str = f"{dose_cumulee_totale:.2f}"
-            
-            commentaires = []
-            alerte = False
-            if error_seance_pct > 1.5: commentaires.append("Erreur > 1.5%"); alerte = True
-            if dose_cumulee_totale >= budget_total_Gy: commentaires.append("BUDGET DÉPASSÉ !"); alerte = True
-            commentaire = " | ".join(commentaires) if commentaires else "OK"
+            comments = []
+            alert = False
+            if error_session_pct > 1.5: comments.append("Erreur > 1.5%"); alert = True
+            if total_cumulated_dose >= total_budget_Gy: comments.append("BUDGET DEPASSE"); alert = True
+            comment = " | ".join(comments) if comments else "OK"
         
             final_table_data.append({
                 "Date": item['Date'], "Machine": item['Machine'],
-                "Dose Prévue (Gy)": f"{dose_nominale:.2f}", 
+                "Planned Dose (Gy)": f"{dose_nominal:.2f}", 
                 "uLCT (%)": f"{item['uLCT (%)']:.2f}",
-                "Erreur Séance (%)": f"{error_seance_pct:.2f}",
-                "Dose Délivrée (Gy)": f"{dose_reelle_seance:.2f}",
-                "Dose Cumulée (Gy)": cumul_str, 
-                "Séances Totales (Faites + Restantes)": str(seances_totales), 
-                "Commentaire": commentaire, 
-                "_Alerte": alerte, "_Index": index, "_Cumul_Val": running_cumul_val, "_Budget_Total": budget_total_Gy
+                "Session Error (%)": f"{error_session_pct:.2f}",
+                "Delivered Dose (Gy)": f"{actual_dose_session:.2f}",
+                "Cumulated Dose (Gy)": cumul_str, 
+                "Comment": comment, 
+                "_Alert": alert, "_Index": index, "_Cumul_Val": running_cumul_val, "_Budget_Total": total_budget_Gy
             })
 
-
-    # Affichage du header patient
-    c1, c2 = st.columns(2) 
-    c1.info(f"**Patient :** {raw_data[0]['Patient']}")
-    c2.info(f"**ID :** {raw_data[0]['ID']}")
+    # === Affichage de la Carte Patient (Version 3 Colonnes sans emoji) ===
+    patient_name = raw_data[0]['Patient']
+    patient_id = raw_data[0]['ID']
+    
+    html_header = f"""
+    <div style="background-color: #f8f9fa; padding: 15px 25px; border-radius: 8px; border-left: 6px solid #1f77b4; box-shadow: 0 2px 4px rgba(0,0,0,0.05); margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center;">
+        <div>
+            <span style="font-size: 13px; color: #6c757d; text-transform: uppercase; letter-spacing: 1px; font-weight: 600;">Dossier Patient</span>
+            <h2 style="margin: 5px 0 0 0; color: #2c3e50; font-size: 26px;">{patient_name}</h2>
+        </div>
+        <div style="text-align: center;">
+            <span style="font-size: 13px; color: #6c757d; text-transform: uppercase; letter-spacing: 1px; font-weight: 600;">Séances prévues par le médecin</span>
+            <h3 style="margin: 5px 0 0 0; color: #2c3e50; font-size: 24px; font-weight: 700;">{nb_frac_ref}</h3>
+        </div>
+        <div style="text-align: right;">
+            <span style="font-size: 13px; color: #6c757d; text-transform: uppercase; letter-spacing: 1px; font-weight: 600;">Identifiant (ID)</span>
+            <h3 style="margin: 5px 0 0 0; color: #1f77b4; font-size: 22px;"># {patient_id}</h3>
+        </div>
+    </div>
+    """
+    st.markdown(html_header, unsafe_allow_html=True)
 
     df = pd.DataFrame(final_table_data) 
     
     def style_dataframe(row):
         styles = []
-        ligne_style = ''
+        line_style = ''
         if row['_Index'] == 0: 
-            ligne_style = 'background-color: #f0f8ff; font-weight: bold;' 
-        elif row['_Alerte']: 
-            ligne_style = 'background-color: #ffebee; color: #d32f2f; font-weight: bold;' 
+            line_style = 'background-color: #f0f8ff; font-weight: bold;' 
+        elif row['_Alert']: 
+            line_style = 'background-color: #ffebee; color: #d32f2f; font-weight: bold;' 
             
         for col in row.index:
-            cell_style = ligne_style 
+            cell_style = line_style 
             if col == 'Machine':
                 if row['Machine'] == 'Tomo2': cell_style = 'background-color: #bbdefb; color: #000000; font-weight: bold;' 
                 elif row['Machine'] == 'Tomo4': cell_style = 'background-color: #ffcdd2; color: #000000; font-weight: bold;' 
@@ -267,7 +268,7 @@ def afficher_dashboard(raw_data):
         use_container_width=True, 
         height=200,
         column_config={
-            "_Alerte": None,      
+            "_Alert": None,      
             "_Index": None,
             "_Cumul_Val": None,
             "_Budget_Total": None 
@@ -280,98 +281,138 @@ def afficher_dashboard(raw_data):
     with col_graph1:
         st.subheader("Consommation du Budget Dose") 
         if len(df) > 0:
-            derniere_seance_df = df.iloc[-1]
-            budget_max = derniere_seance_df['_Budget_Total']
-            dose_actuelle = derniere_seance_df['_Cumul_Val']
+            last_session_df = df.iloc[-1]
+            budget_max =  last_session_df['_Budget_Total']
+            current_dose = last_session_df['_Cumul_Val']
 
-            pourcentage = min(dose_actuelle / budget_max, 1.0) if budget_max > 0 else 0.0
+            percentage = min(current_dose / budget_max, 1.0) if budget_max > 0 else 0.0
             
-            st.progress(pourcentage)
-            st.markdown(f"<h3 style='text-align: center; color: #333;'>{dose_actuelle:.2f} Gy / {budget_max:.2f} Gy</h3>", unsafe_allow_html=True)
+            st.progress(percentage)
+            st.markdown(f"<h3 style='text-align: center; color: #333; margin-bottom: 0px;'>{current_dose:.2f} Gy / {budget_max:.2f} Gy</h3>", unsafe_allow_html=True)
+            st.markdown("<p style='text-align: center; font-size: 13px; color: #6c757d; margin-top: 0px;'><i>(Dose prescrite + 0.5 Gy de tolérance)</i></p>", unsafe_allow_html=True)
             
             st.markdown("---")
             st.markdown("#### Simulateur de fin de traitement")
 
             if len(df) > 1: 
-                machines_uniques = df['Machine'].unique().tolist()
-                machine_choisie = st.radio("Projeter la suite du traitement avec :", options=machines_uniques, horizontal=True)
+                unique_machines = df['Machine'].unique().tolist()
+                machine_chosen = st.radio("Projeter la suite du traitement avec :", options=unique_machines, horizontal=True)
                 
-                derniere_seance_machine = df[df['Machine'] == machine_choisie].iloc[-1]
+                last_session_machine = df[df['Machine'] == machine_chosen].iloc[-1]
                 
-                if derniere_seance_machine['Dose Délivrée (Gy)'] == "-":
-                    dose_simulee = float(derniere_seance_machine['Dose Prévue (Gy)'])
+                if  last_session_machine['Delivered Dose (Gy)'] == "-":
+                    simulated_dose = float(last_session_machine['Planned Dose (Gy)'])
                 else:
-                    dose_simulee = float(derniere_seance_machine['Dose Délivrée (Gy)'])
+                    simulated_dose = float(last_session_machine['Delivered Dose (Gy)'])
                 
-                budget_restant = budget_max - dose_actuelle
-                seances_max = int(budget_restant / dose_simulee) if dose_simulee > 0 and budget_restant > 0 else 0
+                budget_remaining = budget_max - current_dose
+                max_sessions = int(budget_remaining / simulated_dose) if simulated_dose > 0 and budget_remaining > 0 else 0
                 
-                seances_faites = len(df)
-                nb_frac_ref = raw_data[0]['Nb_Frac']
-                seances_restantes_theoriques = nb_frac_ref - seances_faites
+                sessions_done = len(df)
+                theoretical_remaining_sessions = nb_frac_ref - sessions_done
                 
-                if seances_max > 0:
-                    perte = seances_restantes_theoriques - seances_max
-                    alerte_perte = f" <i>(soit une perte de <b>{perte} séance(s)</b>)</i>" if perte > 0 else ""
+                if max_sessions > 0:
+                    loss = theoretical_remaining_sessions - max_sessions
+                    alert_loss = f" <i>(soit une perte de <b>{loss} séance(s)</b>)</i>" if loss > 0 else ""
                     
-                    couleur_fond = "#f0f8ff" 
-                    if machine_choisie == 'Tomo2': couleur_fond = "#bbdefb" 
-                    elif machine_choisie == 'Tomo4': couleur_fond = "#ffcdd2" 
-                    elif machine_choisie == 'Tomo7': couleur_fond = "#c8e6c9" 
+                    bg_color = "#f0f8ff" 
+                    if machine_chosen == 'Tomo2': bg_color = "#bbdefb" 
+                    elif machine_chosen == 'Tomo4': bg_color = "#ffcdd2" 
+                    elif machine_chosen == 'Tomo7': bg_color = "#c8e6c9" 
                         
-                    html_texte = f"""
-                    <div style="background-color: {couleur_fond}; padding: 16px; border-radius: 8px; color: #000000; margin-top: 10px;">
-                        <b>Si le patient continue sur {machine_choisie} :</b><br><br>
-                        Il a déjà réalisé <b>{seances_faites} séance(s)</b>.<br><br>
-                        Au rythme de cette machine (<b>{dose_simulee:.2f} Gy</b>), il peut encore faire <b>{seances_max} séances</b> au lieu des <b>{seances_restantes_theoriques}</b> initialement prévues{alerte_perte}.
+                    html_text = f"""
+                    <div style="background-color: {bg_color}; padding: 16px; border-radius: 8px; color: #000000; margin-top: 10px;">
+                        <b>Si le patient continue sur {machine_chosen} :</b><br><br>
+                        Il a déjà réalisé <b>{sessions_done} séance(s)</b>.<br><br>
+                        Au rythme de cette machine (<b>{simulated_dose:.2f} Gy</b>), il peut encore faire <b>{max_sessions} séances</b> au lieu des <b>{theoretical_remaining_sessions}</b> initialement prévues{alert_loss}.
                     </div>
                     """
-                    st.markdown(html_texte, unsafe_allow_html=True)
+                    st.markdown(html_text, unsafe_allow_html=True)
                 else:
-                    st.error(f" **ALERTE CRITIQUE :** Le budget total sera dépassé à la prochaine séance sur la {machine_choisie} !")
+                    st.error(f"ALERTE CRITIQUE : Le budget total sera dépassé à la prochaine séance sur la {machine_chosen} !")
             else:
-                dose_derniere = float(derniere_seance_df['Dose Prévue (Gy)'])
-                nb_frac_ref = raw_data[0]['Nb_Frac']
-                st.info(f" **Plan initial :** Rythme nominal de {dose_derniere:.2f} Gy/séance. Le patient doit faire **{nb_frac_ref} séances** au total.")
+                dose_last = float(last_session_df['Planned Dose (Gy)'])
+                st.info(f"Plan initial : Rythme nominal de {dose_last:.2f} Gy/séance. Le patient doit faire {nb_frac_ref} séances au total.")
 
     with col_graph2:
-        st.subheader("Localisation angulaire (Tomo-vue)")
-        derniere_seance = raw_data[-1] 
+        st.subheader("Localisation angulaire ") 
+        last_session = raw_data[-1] 
 
-        if derniere_seance['Erreur Séance (%)'] > 0.0:
-            erreurs = np.array(derniere_seance['Profil_Erreur'])
-            N_total = len(erreurs) 
+        if last_session['Session Error (%)'] > 0.0:
+            total_errors = np.array(last_session['Profile_Error'])
+            
+            # Récupération des paramètres physiques (avec sécurité si manquants)
+            CS = last_session.get('CS', 0) #course de table en mm/s
+            GP = last_session.get('GP', 0) #durée de la rotation en secondes
+            
+            distance_tour_cm = (CS * GP) / 10.0 if CS and GP else 0  # Calcul de l'avancement de la table par rotation en cm (mm/s * s / 10)
+            
+            n_rotations = len(total_errors) // 51 #
+            
+            if n_rotations > 1 and distance_tour_cm > 0:
+                options_cm = []
+                for i in range(1, n_rotations + 1):
+                    raw_pos = i * distance_tour_cm
+                    rounded_pos = round(raw_pos, 1)
+                    text = f"{rounded_pos} cm"
+                    options_cm.append(text)
+
+                selection = st.select_slider("Avancement de la table sur l'axe longitudinal (Gz)", options=options_cm) #barre de sélection 
+                
+                rotation_target = options_cm.index(selection) + 1 # On retrouve le numéro de la rotation à partir de la sélection
+                
+                start = (rotation_target - 1) * 51 #on compte en projection donc convertit rotation -> projection
+                end = start + 51
+                slice_errors = total_errors[start:end]
+                graph_title = f"Excès de dose à Z = {selection} (Gantry 0° - 360°)"
+            else:
+                slice_errors = total_errors
+                graph_title = "Excès de dose ramené sur 1 rotation (Gantry 0° - 360°)"
+            
+            # Sécurité si la longueur n'est pas exactement un multiple de 51
+            N_total = len(slice_errors)
             angles = np.linspace(0, 2 * np.pi, N_total, endpoint=False) 
             
-            angles_fermes = np.concatenate((angles, [angles[0]])) 
-            erreurs_fermees = np.concatenate((erreurs, [erreurs[0]])) 
+            angles_closed = np.concatenate((angles, [angles[0]])) 
+            errors_closed = np.concatenate((slice_errors, [slice_errors[0]])) 
             
             fig, ax = plt.subplots(subplot_kw={'projection': 'polar'}, figsize=(5.5, 5.5)) 
             ax.set_theta_zero_location("N") 
             ax.set_theta_direction(-1) 
-            
-            max_err = np.max(erreurs) 
-            ax.set_ylim(max_err * 1.4, 0) 
+  
+            max_err_global = np.max(total_errors) # L'échelle Y est fixée sur l'erreur maximale de TOUT le traitement
+            if max_err_global == 0:
+                max_err_global = 0.1
+            ax.set_ylim(max_err_global * 1.3, 0) #1.3 pour 30% d'espace vide au dessus quoi
 
-            ax.fill_between(angles_fermes, 0, erreurs_fermees, color='#FF4B4B', alpha=0.7) 
-            ax.plot(angles_fermes, erreurs_fermees, color='red', linewidth=1.5) 
+            ax.fill_between(angles_closed, 0, errors_closed, color='#ff4757', alpha=0.35) 
+            ax.plot(angles_closed, errors_closed, color='#c0392b', linewidth=2.0, zorder=3)
             
-            angles_51 = np.linspace(0, 2 * np.pi, 51, endpoint=False)
-            ax.set_xticks(angles_51) 
-            ax.set_xticklabels([str(i+1) for i in range(51)], fontsize=6) 
+            # Application des étiquettes en degrés
+            angles_deg = np.linspace(0, 2 * np.pi, 36, endpoint=False)
+            ax.set_xticks(angles_deg) 
+            labels_10deg = [f"{i}°" for i in range(0, 360, 10)]
+            ax.set_xticklabels(labels_10deg, fontsize=7, color='#2c3e50') 
 
             ax.set_facecolor('white') 
-            ax.set_yticks([max_err * 0.25, max_err * 0.5, max_err * 0.75, max_err]) 
-            ax.set_yticklabels([]) 
+            tick_values = [max_err_global * 0.25, max_err_global * 0.5, max_err_global * 0.75, max_err_global]
+            ax.set_yticks(tick_values) 
+            
+            # On crée le texte des étiquettes (ex: "1.5%")
+            labels_ticks = [f"{val:.3f}%" for val in tick_values]
+            ax.set_yticklabels(labels_ticks, fontsize=7, color='#d32f2f', fontweight='bold') 
+            
+            # On décale l'axe des valeurs à 25 degrés pour qu'il ne chevauche ni le 20° ni le 30°
+            ax.set_rlabel_position(25)
             
             plt.tight_layout()
             st.pyplot(fig, use_container_width=False)
-            st.caption("Excès de dose ramené sur 1 rotation (51 projections).")
+            st.caption(f"Excès de dose sur la rotation {rotation_target} (Gantry 0° - 360°).")
         else:
-            st.success("Aucune erreur détectée sur la dernière séance.")
+            st.info("Aucune erreur détectée sur la dernière séance.")
 #===========================================================================================================
 
-#=======  BARRE LATÉRALE (Menu Ingestion) ==================================================================
+#======= BARRE LATÉRALE (Menu Ingestion) ===================================================================
 st.sidebar.image("logo.png", use_container_width=True)
 st.sidebar.markdown("---")
 st.sidebar.markdown("**Service de Physique Médicale**")
@@ -379,20 +420,20 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("###  Ingestion des plans")
 st.sidebar.markdown(f"<small>Traitez les fichiers DICOM déposés dans le dossier **Transfert_tomo** pour les intégrer à la base.</small>", unsafe_allow_html=True)
 
-fichiers_in = lire_fichiers_dossier(DIR_IN)
+files_in = read_files_in_directory(DIR_IN)
 
 if st.sidebar.button("Traiter les nouveaux plans", use_container_width=True, type="primary"):
-    if len(fichiers_in) == 0:
+    if len(files_in) == 0:
         st.sidebar.warning(f"Aucun nouveau fichier trouvé.")
     else:
         with st.sidebar.status("Analyse en cours...", expanded=True) as status:
             conn = sqlite3.connect(DB_NAME)
             cursor = conn.cursor()
             
-            doublons_ignores = 0
-            nouveaux_traites = 0
+            duplicates_ignored = 0
+            new_processed = 0
 
-            for f in fichiers_in:
+            for f in files_in:
                 try:
                     ds = dcm.dcmread(f, stop_before_pixels=True)
                     try:
@@ -408,108 +449,106 @@ if st.sidebar.button("Traiter les nouveaux plans", use_container_width=True, typ
                         data = get_error_shift(sinogram, delivery)
                         
                         parts = info["patient_name"].split("^")  
-                        nom_complet = f"{parts[1] if len(parts) > 1 else ''} {parts[0]}".strip()
+                        full_name = f"{parts[1] if len(parts) > 1 else ''} {parts[0]}".strip()
                         
                         try: plan_date = str(plan[0x0008, 0x0012].value) 
                         except KeyError: plan_date = "00000000" 
                         try: plan_time = str(plan[0x0008, 0x0013].value) 
                         except KeyError: plan_time = "000000"
                         
-                        date_heure_tri = f"{plan_date}{plan_time}"
-                        date_affichee = f"{plan_date[6:8]}/{plan_date[4:6]}/{plan_date[0:4]} à {plan_time[0:2]}:{plan_time[2:4]}:{plan_time[4:6]}"
+                        date_time_sort = f"{plan_date}{plan_time}"
+                        display_date = f"{plan_date[6:8]}/{plan_date[4:6]}/{plan_date[0:4]} à {plan_time[0:2]}:{plan_time[2:4]}:{plan_time[4:6]}"
                         
-                        cursor.execute("INSERT OR IGNORE INTO PATIENTS (Patient_ID, Nom_Complet) VALUES (?, ?)", 
-                                       (info["patient_id"], nom_complet))
+                        cursor.execute("INSERT OR IGNORE INTO PATIENTS (Patient_ID, Full_Name) VALUES (?, ?)", 
+                                       (info["patient_id"], full_name))
                                        
-                        profil_json = json.dumps(data[2].tolist())
+                        profile_json = json.dumps(data[2].tolist())
                         
                         cursor.execute("""
-                            INSERT INTO SEANCES (
-                                Patient_ID, DICOM_SOP_UID, Date_Heure, Date_Affichee, Machine, 
-                                Dose_Gy, Nb_Frac, uLCT, Erreur_pct, Profil_JSON
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """, (info["patient_id"], uid, date_heure_tri, date_affichee, info["machine_nb"], 
-                              delivery["DS"], delivery.get("Nb_Frac", 1), data[1], data[0], profil_json))
+                            INSERT INTO SESSIONS (
+                                Patient_ID, DICOM_SOP_UID, Date_Time, Display_Date, Machine, 
+                                Dose_Gy, Nb_Frac, uLCT, Error_pct, Profile_JSON, CS_mm_s, GP_s
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (info["patient_id"], uid, date_time_sort, display_date, info["machine_nb"], 
+                              delivery["DS"], delivery.get("Nb_Frac", 1), data[1], data[0], profile_json,
+                              delivery["CS"], delivery["GP"])) # <-- AJOUT DES VARIABLES ICI
                         
-                        nouveaux_traites += 1
+                        new_processed += 1
                         
                     except sqlite3.IntegrityError:
-                        doublons_ignores += 1
+                        duplicates_ignored += 1
                         
                 except Exception as e:
                     st.sidebar.error(f"Erreur sur {os.path.basename(f)} : {e}")
                 
-                nom_fichier = os.path.basename(f)
-                chemin_dest = os.path.join(DIR_ARCHIVE, nom_fichier)
-                if os.path.exists(chemin_dest):
-                    os.remove(chemin_dest)
+                file_name = os.path.basename(f)
+                dest_path = os.path.join(DIR_ARCHIVE, file_name)
+                if os.path.exists(dest_path):
+                    os.remove(dest_path)
                 shutil.move(f, DIR_ARCHIVE)
+
+                parent_dir = os.path.dirname(f)
+                if parent_dir != DIR_IN and not os.listdir(parent_dir):
+                    os.rmdir(parent_dir)
             
             conn.commit()
             conn.close()
             status.update(label="Traitement terminé !", state="complete", expanded=False)
 
-        if nouveaux_traites > 0:
-            st.sidebar.success(f"**{nouveaux_traites}** nouveau(x) plan(s) ajouté(s).")
+        if new_processed > 0:
+            st.sidebar.success(f"**{new_processed}** nouveau(x) plan(s) ajouté(s).")
         else:
-            st.sidebar.info(f"Aucun ajout. **{doublons_ignores}** doublon(s) archivé(s).")
+            st.sidebar.info(f"Aucun ajout. **{duplicates_ignored}** doublon(s) archivé(s).")
 #===========================================================================================================
 
-#=======  ÉCRAN PRINCIPAL (Analyse Clinique) ===============================================================
+#======= MAIN SCREEN (Clinical Analysis) ===================================================================
 st.markdown("<h1 style='text-align: center;'>Suivi des doses Tomo</h1>", unsafe_allow_html=True) 
 
 st.markdown("### Rechercher l'historique d'un patient")
 
 conn = sqlite3.connect(DB_NAME)
 cursor = conn.cursor()
-cursor.execute("SELECT Patient_ID, Nom_Complet FROM PATIENTS")
+cursor.execute("SELECT Patient_ID, Full_Name FROM PATIENTS")
 patients_db = cursor.fetchall()
 
 if len(patients_db) == 0:
     st.info(f"La base de données est vide. Déposez des fichiers dans le dossier **{DIR_IN}** et cliquez sur le bouton à gauche.")
 else:
-    liste_choix = sorted([f"{p[1]} (ID: {p[0]})" for p in patients_db])
+    list_choices = sorted([f"{p[1]} (ID: {p[0]})" for p in patients_db])
 
     new_icon_url = "https://img.icons8.com/?size=25&id=7eX13e1GI7bn&format=png&color=000000"
     st.markdown(f' <img src="{new_icon_url}" style="height: 20px; vertical-align: middle;"> Rechercher par Nom, Prénom ou ID :', unsafe_allow_html=True)
-    recherche = st.text_input("", placeholder="Ex: Dupont, Jean, ou 12345...")
+    search = st.text_input("", placeholder="Ex: Dupont, Jean, ou 12345...")
 
-    if recherche:
-        liste_choix = [p for p in liste_choix if recherche.lower() in p.lower()] 
+    if search:
+        list_choices = [p for p in list_choices if search.lower() in p.lower()] 
                 
-    if len(liste_choix) == 0: 
+    if len(list_choices) == 0: 
         st.warning("Aucun patient ne correspond à cette recherche.")
     else:
-        patient_selectionne = st.selectbox("Sélectionnez un patient :", ["-- Choisir un patient --"] + liste_choix) 
+        patient_selected = st.selectbox("Sélectionnez un patient :", ["-- Choisir un patient --"] + list_choices) 
         
-        if patient_selectionne != "-- Choisir un patient --":
-            id_cible = patient_selectionne.split("ID: ")[1].replace(")", "")
+        if patient_selected != "-- Choisir un patient --":
+            id_target = patient_selected.split("ID: ")[1].replace(")", "")
             
             with st.spinner("Récupération rapide depuis la base SQL..."): 
                 cursor.execute("""
-                    SELECT s.Date_Affichee, s.Machine, s.Dose_Gy, s.Nb_Frac, s.uLCT, s.Erreur_pct, s.Profil_JSON, s.Date_Heure, p.Nom_Complet 
-                    FROM SEANCES s
+                    SELECT s.Display_Date, s.Machine, s.Dose_Gy, s.Nb_Frac, s.uLCT, s.Error_pct, s.Profile_JSON, s.Date_Time, p.Full_Name, s.CS_mm_s, s.GP_s 
+                    FROM SESSIONS s
                     JOIN PATIENTS p ON s.Patient_ID = p.Patient_ID
                     WHERE s.Patient_ID = ? 
-                    ORDER BY s.Date_Heure ASC
-                """, (id_cible,))
+                    ORDER BY s.Date_Time ASC
+                """, (id_target,))
                 
-                lignes_seances = cursor.fetchall()
+                session_lines = cursor.fetchall()
                 
                 raw_data_sql = []
-                for row in lignes_seances:
+                for row in session_lines:
                     raw_data_sql.append({
-                        'Date': row[0],
-                        'Machine': row[1],
-                        'Dose (Gy)': row[2],
-                        'Nb_Frac': row[3],
-                        'uLCT (%)': row[4],
-                        'Erreur Séance (%)': row[5],
-                        'Profil_Erreur': json.loads(row[6]),
-                        'sort_key': row[7],
-                        'Patient': row[8],
-                        'ID': id_cible
+                        'Date': row[0], 'Machine': row[1], 'Dose (Gy)': row[2], 'Nb_Frac': row[3],
+                        'uLCT (%)': row[4], 'Session Error (%)': row[5], 'Profile_Error': json.loads(row[6]),
+                        'sort_key': row[7], 'Patient': row[8], 'ID': id_target,
+                        'CS': row[9], 'GP': row[10] 
                     })
                     
-                afficher_dashboard(raw_data_sql)
-
+                display_dashboard(raw_data_sql)
