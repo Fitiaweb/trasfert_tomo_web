@@ -16,7 +16,7 @@ st.set_page_config(page_title="Tomo Transfer", layout="wide")
 #===========================================================================================================
 
 #======= Automatic Folder & Database Setup =================================================================
-DIR_IN = "IN" #modifier ici si on veut venir chercher dans un autre dossier
+DIR_IN = r"\\nasdata1\TOMO\Transfert_tomo" # Le 'r' bloque le piège des antislashs
 DIR_ARCHIVE = "ARCHIVES"
 DB_NAME = "tomo_database.db" #il creer la base de donnée tout seul 
 
@@ -295,121 +295,161 @@ def display_dashboard(raw_data):
             st.markdown("#### Simulateur de fin de traitement")
 
             if len(df) > 1: 
-                unique_machines = df['Machine'].unique().tolist()
-                machine_chosen = st.radio("Projeter la suite du traitement avec :", options=unique_machines, horizontal=True)
+                # On isole la machine de la séance initiale (première ligne du tableau)
+                initial_machine = df.iloc[0]['Machine']
+                # On filtre la liste des machines uniques pour exclure totalement la machine initiale
+                unique_machines = [m for m in df['Machine'].unique().tolist() if m != initial_machine]
                 
-                last_session_machine = df[df['Machine'] == machine_chosen].iloc[-1]
-                
-                if  last_session_machine['Delivered Dose (Gy)'] == "-":
-                    simulated_dose = float(last_session_machine['Planned Dose (Gy)'])
-                else:
-                    simulated_dose = float(last_session_machine['Delivered Dose (Gy)'])
-                
-                budget_remaining = budget_max - current_dose
-                max_sessions = int(budget_remaining / simulated_dose) if simulated_dose > 0 and budget_remaining > 0 else 0
-                
-                sessions_done = len(df)
-                theoretical_remaining_sessions = nb_frac_ref - sessions_done
-                
-                if max_sessions > 0:
-                    loss = theoretical_remaining_sessions - max_sessions
-                    alert_loss = f" <i>(soit une perte de <b>{loss} séance(s)</b>)</i>" if loss > 0 else ""
+                if len(unique_machines) > 0:
+                    machine_chosen = st.radio("Projeter la suite du traitement avec :", options=unique_machines, horizontal=True)
                     
-                    bg_color = "#f0f8ff" 
-                    if machine_chosen == 'Tomo2': bg_color = "#bbdefb" 
-                    elif machine_chosen == 'Tomo4': bg_color = "#ffcdd2" 
-                    elif machine_chosen == 'Tomo7': bg_color = "#c8e6c9" 
-                        
-                    html_text = f"""
-                    <div style="background-color: {bg_color}; padding: 16px; border-radius: 8px; color: #000000; margin-top: 10px;">
-                        <b>Si le patient continue sur {machine_chosen} :</b><br><br>
-                        Il a déjà réalisé <b>{sessions_done} séance(s)</b>.<br><br>
-                        Au rythme de cette machine (<b>{simulated_dose:.2f} Gy</b>), il peut encore faire <b>{max_sessions} séances</b> au lieu des <b>{theoretical_remaining_sessions}</b> initialement prévues{alert_loss}.
-                    </div>
-                    """
-                    st.markdown(html_text, unsafe_allow_html=True)
+                    last_session_machine = df[df['Machine'] == machine_chosen].iloc[-1]
+                    
+                    if  last_session_machine['Delivered Dose (Gy)'] == "-":
+                        simulated_dose = float(last_session_machine['Planned Dose (Gy)'])
+                    else:
+                        simulated_dose = float(last_session_machine['Delivered Dose (Gy)'])
+                    
+                    budget_remaining = budget_max - current_dose
+                    max_sessions = int(budget_remaining / simulated_dose) if simulated_dose > 0 and budget_remaining > 0 else 0
+                    
+                    sessions_done = len(df)
+                    theoretical_remaining_sessions = nb_frac_ref - sessions_done
+                    
+                    if max_sessions > 0:
+                        # Logique de coloration dynamique (Vert si ça ne bouge pas, Rouge si ça change)
+                        if max_sessions == theoretical_remaining_sessions:
+                            bg_color = "#d4edda" # Vert (Stable)
+                            text_color = "#155724"
+                            alert_loss = ""
+                        else:
+                            bg_color = "#f8d7da" # Rouge (Décalage de dose)
+                            text_color = "#721c24"
+                            if max_sessions < theoretical_remaining_sessions:
+                                loss = theoretical_remaining_sessions - max_sessions
+                                alert_loss = f" <i>(soit une perte de <b>{loss} séance(s)</b>)</i>"
+                            else:
+                                gain = max_sessions - theoretical_remaining_sessions
+                                alert_loss = f" <i>(soit un décalage de <b>+{gain} séance(s)</b>)</i>"
+                            
+                        html_text = f"""
+                        <div style="background-color: {bg_color}; padding: 16px; border-radius: 8px; color: {text_color}; margin-top: 10px;">
+                            <b>Si le patient continue sur {machine_chosen} :</b><br><br>
+                            Il a déjà réalisé <b>{sessions_done} séance(s)</b>.<br><br>
+                            Au rythme de cette machine (<b>{simulated_dose:.2f} Gy</b>), il peut encore faire <b>{max_sessions} séances</b> au lieu des <b>{theoretical_remaining_sessions}</b> initialement prévues{alert_loss}.
+                        </div>
+                        """
+                        st.markdown(html_text, unsafe_allow_html=True)
+                    else:
+                        st.error(f"ALERTE CRITIQUE : Le budget total sera dépassé à la prochaine séance sur la {machine_chosen} !")
                 else:
-                    st.error(f"ALERTE CRITIQUE : Le budget total sera dépassé à la prochaine séance sur la {machine_chosen} !")
+                    st.info("Le traitement est actuellement sur la machine initiale. Aucun transfert n'a encore été enregistré pour simuler une projection.")
             else:
                 dose_last = float(last_session_df['Planned Dose (Gy)'])
                 st.info(f"Plan initial : Rythme nominal de {dose_last:.2f} Gy/séance. Le patient doit faire {nb_frac_ref} séances au total.")
 
     with col_graph2:
-        st.subheader("Localisation angulaire ") 
-        last_session = raw_data[-1] 
-
-        if last_session['Session Error (%)'] > 0.0:
-            total_errors = np.array(last_session['Profile_Error'])
+        st.subheader("Angular Localization") 
+        
+        # 1. Identify ONLY true transfer sessions (ignoring the initial baseline)
+        transfer_sessions = []
+        if len(raw_data) > 0:
+            previous_machine = raw_data[0]['Machine']
             
-            # Récupération des paramètres physiques (avec sécurité si manquants)
-            CS = last_session.get('CS', 0) #course de table en mm/s
-            GP = last_session.get('GP', 0) #durée de la rotation en secondes
-            
-            distance_tour_cm = (CS * GP) / 10.0 if CS and GP else 0  # Calcul de l'avancement de la table par rotation en cm (mm/s * s / 10)
-            
-            n_rotations = len(total_errors) // 51 #
-            
-            if n_rotations > 1 and distance_tour_cm > 0:
-                options_cm = []
-                for i in range(1, n_rotations + 1):
-                    raw_pos = i * distance_tour_cm
-                    rounded_pos = round(raw_pos, 1)
-                    text = f"{rounded_pos} cm"
-                    options_cm.append(text)
-
-                selection = st.select_slider("Avancement de la table sur l'axe longitudinal (Gz)", options=options_cm) #barre de sélection 
-                
-                rotation_target = options_cm.index(selection) + 1 # On retrouve le numéro de la rotation à partir de la sélection
-                
-                start = (rotation_target - 1) * 51 #on compte en projection donc convertit rotation -> projection
-                end = start + 51
-                slice_errors = total_errors[start:end]
-                graph_title = f"Excès de dose à Z = {selection} (Gantry 0° - 360°)"
-            else:
-                slice_errors = total_errors
-                graph_title = "Excès de dose ramené sur 1 rotation (Gantry 0° - 360°)"
-            
-            # Sécurité si la longueur n'est pas exactement un multiple de 51
-            N_total = len(slice_errors)
-            angles = np.linspace(0, 2 * np.pi, N_total, endpoint=False) 
-            
-            angles_closed = np.concatenate((angles, [angles[0]])) 
-            errors_closed = np.concatenate((slice_errors, [slice_errors[0]])) 
-            
-            fig, ax = plt.subplots(subplot_kw={'projection': 'polar'}, figsize=(5.5, 5.5)) 
-            ax.set_theta_zero_location("N") 
-            ax.set_theta_direction(-1) 
-  
-            max_err_global = np.max(total_errors) # L'échelle Y est fixée sur l'erreur maximale de TOUT le traitement
-            if max_err_global == 0:
-                max_err_global = 0.1
-            ax.set_ylim(max_err_global * 1.3, 0) #1.3 pour 30% d'espace vide au dessus quoi
-
-            ax.fill_between(angles_closed, 0, errors_closed, color='#ff4757', alpha=0.35) 
-            ax.plot(angles_closed, errors_closed, color='#c0392b', linewidth=2.0, zorder=3)
-            
-            # Application des étiquettes en degrés
-            angles_deg = np.linspace(0, 2 * np.pi, 36, endpoint=False)
-            ax.set_xticks(angles_deg) 
-            labels_10deg = [f"{i}°" for i in range(0, 360, 10)]
-            ax.set_xticklabels(labels_10deg, fontsize=7, color='#2c3e50') 
-
-            ax.set_facecolor('white') 
-            tick_values = [max_err_global * 0.25, max_err_global * 0.5, max_err_global * 0.75, max_err_global]
-            ax.set_yticks(tick_values) 
-            
-            # On crée le texte des étiquettes (ex: "1.5%")
-            labels_ticks = [f"{val:.3f}%" for val in tick_values]
-            ax.set_yticklabels(labels_ticks, fontsize=7, color='#d32f2f', fontweight='bold') 
-            
-            # On décale l'axe des valeurs à 25 degrés pour qu'il ne chevauche ni le 20° ni le 30°
-            ax.set_rlabel_position(25)
-            
-            plt.tight_layout()
-            st.pyplot(fig, use_container_width=False)
-            st.caption(f"Excès de dose sur la rotation {rotation_target} (Gantry 0° - 360°).")
+            for item in raw_data[1:]: # We start looking from the second session
+                current_machine = item['Machine']
+                if current_machine != previous_machine:
+                    transfer_sessions.append(item)
+                    previous_machine = current_machine
+        
+        # 2. Check if any transfers actually happened
+        if len(transfer_sessions) == 0:
+            st.info("No machine transfer detected for this patient. The treatment remained on the initial machine.")
         else:
-            st.info("Aucune erreur détectée sur la dernière séance.")
+            # 3. Create labels for the dropdown menu (only real transfers)
+            menu_options = []
+            for s in transfer_sessions:
+                menu_options.append(f"Transfer: {s['Date']} to {s['Machine']}")
+                    
+            # 4. Display the dropdown menu to the user
+            selected_date = st.selectbox("Select the transfer event to analyze:", options=menu_options)
+            
+            # 5. Retrieve data for the selected session
+            chosen_index = menu_options.index(selected_date)
+            session_to_analyze = transfer_sessions[chosen_index]
+
+            if session_to_analyze['Session Error (%)'] > 0.0:
+                total_errors = np.array(session_to_analyze['Profile_Error'])
+                
+                # Retrieval of physical parameters (with safety if missing)
+                CS = session_to_analyze.get('CS', 0) # couch speed in mm/s
+                GP = session_to_analyze.get('GP', 0) # gantry period in seconds
+                
+                distance_tour_cm = (CS * GP) / 10.0 if CS and GP else 0  # Table advancement per rotation in cm
+                
+                n_rotations = len(total_errors) // 51 
+                
+                if n_rotations > 1 and distance_tour_cm > 0:
+                    options_cm = []
+                    for i in range(1, n_rotations + 1):
+                        raw_pos = i * distance_tour_cm
+                        rounded_pos = round(raw_pos, 1)
+                        text = f"{rounded_pos} cm"
+                        options_cm.append(text)
+
+                    selection = st.select_slider("Table advancement on the longitudinal axis (Gz)", options=options_cm) 
+                    
+                    rotation_target = options_cm.index(selection) + 1 
+                    
+                    start = (rotation_target - 1) * 51 
+                    end = start + 51
+                    slice_errors = total_errors[start:end]
+                    caption_text = f"Dose excess on rotation {rotation_target} (Gantry 0° - 360°)."
+                else:
+                    slice_errors = total_errors
+                    caption_text = "Dose excess over 1 rotation (Gantry 0° - 360°)."
+                
+                # Security if length is not exactly a multiple of 51
+                N_total = len(slice_errors)
+                angles = np.linspace(0, 2 * np.pi, N_total, endpoint=False) 
+                
+                angles_closed = np.concatenate((angles, [angles[0]])) 
+                errors_closed = np.concatenate((slice_errors, [slice_errors[0]])) 
+                
+                fig, ax = plt.subplots(subplot_kw={'projection': 'polar'}, figsize=(5.5, 5.5)) 
+                ax.set_theta_zero_location("N") 
+                ax.set_theta_direction(-1) 
+      
+                max_err_global = np.max(total_errors) # Y-scale is fixed on the max error of the WHOLE treatment
+                if max_err_global == 0:
+                    max_err_global = 0.1
+                ax.set_ylim(max_err_global * 1.3, 0) 
+
+                ax.fill_between(angles_closed, 0, errors_closed, color='#ff4757', alpha=0.35) 
+                ax.plot(angles_closed, errors_closed, color='#c0392b', linewidth=2.0, zorder=3)
+                
+                # Apply degree labels
+                angles_deg = np.linspace(0, 2 * np.pi, 36, endpoint=False)
+                ax.set_xticks(angles_deg) 
+                labels_10deg = [f"{i}°" for i in range(0, 360, 10)]
+                ax.set_xticklabels(labels_10deg, fontsize=7, color='#2c3e50') 
+
+                ax.set_facecolor('white') 
+                tick_values = [max_err_global * 0.25, max_err_global * 0.5, max_err_global * 0.75, max_err_global]
+                ax.set_yticks(tick_values) 
+                
+                # Create text for labels (e.g., "1.5%")
+                labels_ticks = [f"{val:.3f}%" for val in tick_values]
+                ax.set_yticklabels(labels_ticks, fontsize=7, color='#d32f2f', fontweight='bold') 
+                
+                # Shift value axis to 25 degrees so it doesn't overlap
+                ax.set_rlabel_position(25)
+                
+                plt.tight_layout()
+                st.pyplot(fig, use_container_width=False)
+                st.caption(caption_text)
+            else:
+                st.info("No error detected in the selected session.")
 #===========================================================================================================
 
 #======= BARRE LATÉRALE (Menu Ingestion) ===================================================================
