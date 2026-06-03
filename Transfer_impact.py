@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import time
 import sqlite3
 import json
+import plotly.express as px
 #===========================================================================================================
 
 #======= Page Configuration ================================================================================
@@ -123,6 +124,8 @@ def general_info(plan):
         plan_info["treatment_site"] = "Thorax & Poumon"
     elif any(mot in texte_minuscule for mot in ["abdomen", "foie", "pancreas", "estomac"]):
         plan_info["treatment_site"] = "Abdomen"
+    elif any(mot in texte_minuscule for mot in ["hodgkin", "lymphome", "manteau", "ganglion", "rtni"]):
+        plan_info["treatment_site"] = "Hémato & Ganglionnaire"
     else:
         plan_info["treatment_site"] = "Inconnu" # Si aucun mot-clé n'est trouvé
     # --------------------------------------------------------------------------------
@@ -247,7 +250,7 @@ def display_dashboard(raw_data):
         col1, col2 = st.columns([3, 1])
         
         # Les choix standards propres que tu veux avoir dans ta base au final
-        liste_sites_propres = ["Sein & Paroi", "ORL", "Pelvis & Gynéco", "Cérébral", "Thorax & Poumon", "Abdomen", "Autre", "Inconnu"]
+        liste_sites_propres = ["Sein & Paroi", "ORL", "Pelvis & Gynéco", "Cérébral", "Thorax & Poumon", "Abdomen", "Hémato & Ganglionnaire", "Autre", "Inconnu"]
         
         # On rajoute la valeur brute dans la liste pour qu'elle s'affiche par défaut si elle n'a pas encore été corrigée
         if site_traitement not in liste_sites_propres:
@@ -668,56 +671,169 @@ if st.sidebar.button("Traiter les nouveaux plans", use_container_width=True, typ
             st.sidebar.info(f"Aucun ajout. **{duplicates_ignored}** doublon(s) archivé(s).")
 #===========================================================================================================
 
+
 #======= MAIN SCREEN (Clinical Analysis) ===================================================================
-st.markdown("<h1 style='text-align: center;'>Suivi de transfert tomo</h1>", unsafe_allow_html=True) 
+st.markdown("<h1 style='text-align: center;'>Suivi de transfert TomoTherapy</h1>", unsafe_allow_html=True) 
 
-st.markdown("### Rechercher l'historique d'un patient")
+# --- Création des deux onglets principaux ---
+tab_patient, tab_stats = st.tabs([" Dossier Patient", " Statistiques Globales"])
 
-conn = sqlite3.connect(DB_NAME)
-cursor = conn.cursor()
-cursor.execute("SELECT Patient_ID, Full_Name FROM PATIENTS")
-patients_db = cursor.fetchall()
+# ==========================================================================================================
+# ONGLET 1 : DOSSIER PATIENT (Ton code actuel, indenté)
+# ==========================================================================================================
+with tab_patient:
+    st.markdown("### Rechercher l'historique d'un patient")
 
-if len(patients_db) == 0:
-    st.info(f"La base de données est vide. Déposez des fichiers dans le dossier **{DIR_IN}** et cliquez sur le bouton à gauche.")
-else:
-    list_choices = sorted([f"{p[1]} (ID: {p[0]})" for p in patients_db])
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("SELECT Patient_ID, Full_Name FROM PATIENTS")
+    patients_db = cursor.fetchall()
 
-    new_icon_url = "https://img.icons8.com/?size=25&id=7eX13e1GI7bn&format=png&color=000000"
-    st.markdown(f' <img src="{new_icon_url}" style="height: 20px; vertical-align: middle;"> Rechercher par Nom, Prénom ou ID :', unsafe_allow_html=True)
-    search = st.text_input("", placeholder="Ex: Dupont, Jean, ou 12345...")
-
-    if search:
-        list_choices = [p for p in list_choices if search.lower() in p.lower()] 
-                
-    if len(list_choices) == 0: 
-        st.warning("Aucun patient ne correspond à cette recherche.")
+    if len(patients_db) == 0:
+        st.info(f"La base de données est vide. Déposez des fichiers dans le dossier **{DIR_IN}** et cliquez sur le bouton à gauche.")
     else:
-        patient_selected = st.selectbox("Sélectionnez un patient :", ["-- Choisir un patient --"] + list_choices) 
-        
-        if patient_selected != "-- Choisir un patient --":
-            id_target = patient_selected.split("ID: ")[1].replace(")", "")
-            
-            with st.spinner("Récupération rapide depuis la base SQL..."): 
-                cursor.execute("""
-                    SELECT s.Display_Date, s.Machine, s.Dose_Gy, s.Nb_Frac, s.uLCT, s.Error_pct, s.Profile_JSON, s.Date_Time, p.Full_Name, s.CS_mm_s, s.GP_s, s.Treatment_Site, s.Raw_Treatment_Site 
-                    FROM SESSIONS s
-                    JOIN PATIENTS p ON s.Patient_ID = p.Patient_ID
-                    WHERE s.Patient_ID = ? 
-                    ORDER BY s.Date_Time ASC
-                """, (id_target,))
-                
-                session_lines = cursor.fetchall()
-                
-                raw_data_sql = []
-                for row in session_lines:
-                    raw_data_sql.append({
-                        'Date': row[0], 'Machine': row[1], 'Dose (Gy)': row[2], 'Nb_Frac': row[3],
-                        'uLCT (%)': row[4], 'Session Error (%)': row[5], 'Profile_Error': json.loads(row[6]),
-                        'sort_key': row[7], 'Patient': row[8], 'ID': id_target,
-                        'CS': row[9], 'GP': row[10],
-                        'Site': row[11],
-                        'Raw_Site': row[12]
-                    })
+        list_choices = sorted([f"{p[1]} (ID: {p[0]})" for p in patients_db])
+
+        new_icon_url = "https://img.icons8.com/?size=25&id=7eX13e1GI7bn&format=png&color=000000"
+        st.markdown(f' <img src="{new_icon_url}" style="height: 20px; vertical-align: middle;"> Rechercher par Nom, Prénom ou ID :', unsafe_allow_html=True)
+        search = st.text_input("", placeholder="Ex: Dupont, Jean, ou 12345...")
+
+        if search:
+            list_choices = [p for p in list_choices if search.lower() in p.lower()] 
                     
-                display_dashboard(raw_data_sql)
+        if len(list_choices) == 0: 
+            st.warning("Aucun patient ne correspond à cette recherche.")
+        else:
+            patient_selected = st.selectbox("Sélectionnez un patient :", ["-- Choisir un patient --"] + list_choices) 
+            
+            if patient_selected != "-- Choisir un patient --":
+                id_target = patient_selected.split("ID: ")[1].replace(")", "")
+                
+                with st.spinner("Récupération rapide depuis la base SQL..."): 
+                    cursor.execute("""
+                        SELECT s.Display_Date, s.Machine, s.Dose_Gy, s.Nb_Frac, s.uLCT, s.Error_pct, s.Profile_JSON, s.Date_Time, p.Full_Name, s.CS_mm_s, s.GP_s, s.Treatment_Site, s.Raw_Treatment_Site 
+                        FROM SESSIONS s
+                        JOIN PATIENTS p ON s.Patient_ID = p.Patient_ID
+                        WHERE s.Patient_ID = ? 
+                        ORDER BY s.Date_Time ASC
+                    """, (id_target,))
+                    
+                    session_lines = cursor.fetchall()
+                    
+                    raw_data_sql = []
+                    for row in session_lines:
+                        raw_data_sql.append({
+                            'Date': row[0], 'Machine': row[1], 'Dose (Gy)': row[2], 'Nb_Frac': row[3],
+                            'uLCT (%)': row[4], 'Session Error (%)': row[5], 'Profile_Error': json.loads(row[6]),
+                            'sort_key': row[7], 'Patient': row[8], 'ID': id_target,
+                            'CS': row[9], 'GP': row[10],
+                            'Site': row[11],
+                            'Raw_Site': row[12]
+                        })
+                        
+                    display_dashboard(raw_data_sql)
+
+
+
+# ==========================================================================================================
+# ONGLET 2 : STATISTIQUES GLOBALES
+# ==========================================================================================================
+with tab_stats:
+    st.markdown("###  Analyse Statistique du Service")
+
+    # 1. Connexion et extraction globale pour tous les sous-onglets
+    conn_stats = sqlite3.connect(DB_NAME)
+    df_stats = pd.read_sql_query("SELECT Patient_ID, Date_Time, Machine, Treatment_Site, Raw_Treatment_Site, Error_pct FROM SESSIONS", conn_stats)
+    conn_stats.close()
+
+    if len(df_stats) == 0:
+        st.info("Aucune donnée disponible pour le moment. Ingérez des fichiers DICOM pour générer les statistiques.")
+    else:
+        # On trie impérativement par Patient et par Date pour que la chronologie soit parfaite
+        df_stats = df_stats.sort_values(by=['Patient_ID', 'Date_Time'])
+        
+        # --- CRÉATION DES SOUS-ONGLETS ---
+        sub_tab_loc, sub_tab_mach = st.tabs([" Par Localisation Anatomique", " Par Sens de Transfert (Inter-Machines)"])
+
+        # --------------------------------------------------------------------------------------------------
+        # SOUS-ONGLET A : Localisation (Ton code précédent)
+        # --------------------------------------------------------------------------------------------------
+        with sub_tab_loc:
+            st.markdown("<small style='color: #6c757d;'>Erreur moyenne des transferts (uLCT) par zone traitée. <b>Les plans initiaux sont exclus.</b></small><br><br>", unsafe_allow_html=True)
+            
+            df_loc = df_stats.dropna(subset=['Treatment_Site']).copy()
+            df_loc['session_num'] = df_loc.groupby('Patient_ID').cumcount()
+            df_transfers_loc = df_loc[df_loc['session_num'] > 0]
+            
+            if len(df_transfers_loc) == 0:
+                st.warning("Il n'y a pas encore eu de transfert de machine enregistré dans la base.")
+            else:
+                df_mean_loc = df_transfers_loc.groupby('Treatment_Site')['Error_pct'].mean().reset_index()
+                df_mean_loc = df_mean_loc.sort_values(by='Error_pct', ascending=False)
+
+                fig_loc = px.bar(
+                    df_mean_loc,
+                    x='Treatment_Site',
+                    y='Error_pct',
+                    title="Erreur Moyenne par Catégorie Clinique",
+                    labels={'Treatment_Site': 'Localisation Anatomique', 'Error_pct': 'Erreur Moyenne (%)'},
+                    text_auto='.2f', 
+                    color='Error_pct', 
+                    color_continuous_scale='Reds' 
+                )
+
+                fig_loc.update_layout(xaxis_tickangle=-45, plot_bgcolor='rgba(0,0,0,0)', margin=dict(t=40, b=0, l=0, r=0))
+                fig_loc.add_hline(y=1.5, line_dash="dash", line_color="red", annotation_text="Seuil d'alerte (1.5%)")
+
+                st.plotly_chart(fig_loc, use_container_width=True)
+
+                # Tableau de débogage pour les "Inconnus"
+                df_inconnu = df_transfers_loc[df_transfers_loc['Treatment_Site'] == 'Inconnu']
+                if len(df_inconnu) > 0:
+                    with st.expander(" Identifier les patients 'Inconnu'"):
+                        st.markdown("Regardez la colonne **Nom brut DICOM** pour comprendre quelle abréviation a piégé l'algorithme.")
+                        df_inconnu_display = df_inconnu[['Patient_ID', 'Raw_Treatment_Site', 'Error_pct', 'Date_Time']].copy()
+                        df_inconnu_display.columns = ['ID Patient', 'Nom brut DICOM', 'Erreur (%)', 'Date du plan']
+                        st.dataframe(df_inconnu_display, use_container_width=True, hide_index=True)
+
+        # --------------------------------------------------------------------------------------------------
+        # SOUS-ONGLET B : Sens de Transfert (Nouveau)
+        # --------------------------------------------------------------------------------------------------
+        with sub_tab_mach:
+            st.markdown("<small style='color: #6c757d;'>Erreur moyenne constatée selon la machine de départ et la machine d'arrivée.</small><br><br>", unsafe_allow_html=True)
+
+            # Logique Pandas : On récupère la machine de la séance PRÉCÉDENTE pour chaque patient
+            df_mach = df_stats.copy()
+            df_mach['Prev_Machine'] = df_mach.groupby('Patient_ID')['Machine'].shift(1)
+            
+            # On supprime les lignes où il n'y a pas de machine précédente (plan initial)
+            df_transitions = df_mach.dropna(subset=['Prev_Machine']).copy()
+            
+            # On ne garde que les VRAIS changements de machine (Tomo2 vers Tomo2 n'est pas un transfert)
+            df_transitions = df_transitions[df_transitions['Machine'] != df_transitions['Prev_Machine']]
+            
+            if len(df_transitions) == 0:
+                st.info("Aucun changement inter-machines détecté dans la base pour le moment.")
+            else:
+                # Création du "Trajet" (ex: "Tomo7 ➔ Tomo2")
+                df_transitions['Trajet'] = df_transitions['Prev_Machine'] + " ➔ " + df_transitions['Machine']
+                
+                # Calcul de la moyenne par Trajet
+                df_traj_mean = df_transitions.groupby('Trajet')['Error_pct'].mean().reset_index()
+                df_traj_mean = df_traj_mean.sort_values(by='Error_pct', ascending=False)
+                
+                fig_mach = px.bar(
+                    df_traj_mean,
+                    x='Trajet',
+                    y='Error_pct',
+                    title="Erreur Moyenne selon le Couple de Transfert",
+                    labels={'Trajet': 'Sens du transfert', 'Error_pct': 'Erreur Moyenne (%)'},
+                    text_auto='.2f', 
+                    color='Error_pct', 
+                    color_continuous_scale='Oranges' # Couleur différente pour bien distinguer les deux onglets
+                )
+                
+                fig_mach.update_layout(xaxis_tickangle=0, plot_bgcolor='rgba(0,0,0,0)', margin=dict(t=40, b=0, l=0, r=0))
+                fig_mach.add_hline(y=1.5, line_dash="dash", line_color="red", annotation_text="Seuil d'alerte (1.5%)")
+                
+                st.plotly_chart(fig_mach, use_container_width=True)
