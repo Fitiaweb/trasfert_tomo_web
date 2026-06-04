@@ -16,7 +16,31 @@ import plotly.express as px     # Pour créer des graphiques statistiques intera
 # Configure le titre de l'onglet du navigateur et utilise toute la largeur de l'écran
 st.set_page_config(page_title="Tomo Transfer", layout="wide")
 #===========================================================================================================
+#======= Amélioration visuelle des onglets =================================================================
 
+st.markdown("""
+    <style>
+    /* Augmente la taille et le contraste des onglets */
+    button[data-baseweb="tab"] {
+        font-size: 24px !important; 
+        font-weight: 800 !important;
+        padding: 20px 60px !important;
+        background-color: #f0f2f6 !important;
+        border-radius: 10px 10px 0 0 !important;
+        border: 2px solid #d3d3d3 !important;
+    }
+    /* Ajoute un effet de surbrillance quand on passe la souris dessus */
+    button[data-baseweb="tab"]:hover {
+        background-color: #e0e0e0 !important;
+    }
+    /* Espace entre les onglets */
+    div[data-baseweb="tab-list"] {
+        gap: 30px;
+    }
+    </style>
+""", unsafe_allow_html=True)
+#===========================================================================================================
+#===========================================================================================================
 #======= Automatic Folder & Database Setup =================================================================
 DIR_IN = r"\\nasdata1\TOMO\Transfert_tomo"  # Chemin du dossier où les nouveaux DICOM sont déposés
 DIR_ARCHIVE = "ARCHIVES"                    # Dossier où les DICOM sont déplacés après traitement
@@ -795,24 +819,28 @@ with tab_stats:
             " Complexité vs Erreur"
         ])
 
+       
         # --------------------------------------------------------------------------------------------------
         # SOUS-ONGLET A : Localisation 
         # --------------------------------------------------------------------------------------------------
         with sub_tab_loc:
-            st.markdown("<small style='color: #6c757d;'>Erreur moyenne des transferts (uLCT) par zone traitée. <b>Les plans initiaux sont exclus.</b></small><br><br>", unsafe_allow_html=True)
+            st.markdown("<small style='color: #6c757d;'>Erreur moyenne des transferts par zone traitée (Plans initiaux exclus).</small><br>", unsafe_allow_html=True)
+            
+            # Curseur de seuil dynamique
+            seuil_alerte = st.number_input(" Définir le seuil d'alerte clinique (%) :", min_value=0.0, max_value=10.0, value=1.5, step=0.1, key="seuil_loc")
+            st.markdown("<br>", unsafe_allow_html=True)
             
             df_loc = df_stats.dropna(subset=['Treatment_Site']).copy()
-            df_loc['session_num'] = df_loc.groupby('Patient_ID').cumcount() # Numérote les séances de 0 à N
-            df_transfers_loc = df_loc[df_loc['session_num'] > 0]            # Ignore les numéros 0 (Plan Initial)
+            df_loc['session_num'] = df_loc.groupby('Patient_ID').cumcount() 
+            df_transfers_loc = df_loc[df_loc['session_num'] > 0]            
             
             if len(df_transfers_loc) == 0:
                 st.warning("Il n'y a pas encore eu de transfert de machine enregistré dans la base.")
             else:
-                # Groupe par localisation pour calculer la moyenne (mean)
+                # CORRECTION : On groupe d'abord, on trie ensuite
                 df_mean_loc = df_transfers_loc.groupby('Treatment_Site')['Error_pct'].mean().reset_index()
                 df_mean_loc = df_mean_loc.sort_values(by='Error_pct', ascending=False)
 
-                # Utilisation de Plotly pour un graphique en barres interactif
                 fig_loc = px.bar(
                     df_mean_loc,
                     x='Treatment_Site',
@@ -825,18 +853,9 @@ with tab_stats:
                 )
 
                 fig_loc.update_layout(xaxis_tickangle=-45, plot_bgcolor='rgba(0,0,0,0)', margin=dict(t=40, b=0, l=0, r=0))
-                fig_loc.add_hline(y=1.5, line_dash="dash", line_color="red", annotation_text="Seuil d'alerte (1.5%)")
+                fig_loc.add_hline(y=seuil_alerte, line_dash="dash", line_color="red", annotation_text=f"Seuil ({seuil_alerte}%)")
 
                 st.plotly_chart(fig_loc, use_container_width=True)
-
-                # Tableau de débogage pour repêcher les noms DICOM mal renseignés ("Inconnu")
-                df_inconnu = df_transfers_loc[df_transfers_loc['Treatment_Site'] == 'Inconnu']
-                if len(df_inconnu) > 0:
-                    with st.expander(" Identifier les patients 'Inconnu'"):
-                        st.markdown("Regardez la colonne **Nom brut DICOM** pour comprendre quelle abréviation a piégé l'algorithme.")
-                        df_inconnu_display = df_inconnu[['Patient_ID', 'Raw_Treatment_Site', 'Error_pct', 'Date_Time']].copy()
-                        df_inconnu_display.columns = ['ID Patient', 'Nom brut DICOM', 'Erreur (%)', 'Date du plan']
-                        st.dataframe(df_inconnu_display, use_container_width=True, hide_index=True)
 
         # --------------------------------------------------------------------------------------------------
         # SOUS-ONGLET B : Sens de Transfert 
@@ -951,6 +970,7 @@ with tab_stats:
         with sub_tab_time:
             st.markdown("<small style='color: #6c757d;'>Suivi temporel de l'erreur moyenne pour détecter la fatigue des machines (maintenance prédictive). <b>Les plans initiaux sont exclus.</b></small><br><br>", unsafe_allow_html=True)
             
+
             df_time = df_stats.copy()
 
             # --- NOUVEAUTÉ : EXCLUSION DES PLANS INITIAUX ---
