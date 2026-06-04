@@ -770,7 +770,6 @@ with tab_patient:
                     display_dashboard(raw_data_sql)
 
 
-
 # ==========================================================================================================
 # ONGLET 2 : STATISTIQUES GLOBALES (Contrôle Qualité du Service)
 # ==========================================================================================================
@@ -779,7 +778,7 @@ with tab_stats:
 
     # 1. Connexion et extraction globale (Aspire toute la table)
     conn_stats = sqlite3.connect(DB_NAME)
-    df_stats = pd.read_sql_query("SELECT Patient_ID, Date_Time, Machine, Treatment_Site, Raw_Treatment_Site, Error_pct FROM SESSIONS", conn_stats)
+    df_stats = pd.read_sql_query("SELECT Patient_ID, Date_Time, Machine, Treatment_Site, Raw_Treatment_Site, Error_pct, GP_s, CS_mm_s FROM SESSIONS", conn_stats)
     conn_stats.close()
 
     if len(df_stats) == 0:
@@ -788,8 +787,13 @@ with tab_stats:
         # Trie par Patient et par Date pour que les calculs de chronologie (shift, cumcount) fonctionnent bien
         df_stats = df_stats.sort_values(by=['Patient_ID', 'Date_Time'])
         
-        # --- CRÉATION DES SOUS-ONGLETS (Localisation vs Machine) ---
-        sub_tab_loc, sub_tab_mach = st.tabs([" Par Localisation Anatomique", " Par Sens de Transfert (Inter-Machines)"])
+        # --- CRÉATION DES SOUS-ONGLETS (Ajout du 3ème onglet temporel) ---
+        sub_tab_loc, sub_tab_mach, sub_tab_time, sub_tab_complex = st.tabs([
+            " Par Localisation", 
+            " Par Sens de Transfert", 
+            " Évolution dans le Temps",
+            " Complexité vs Erreur"
+        ])
 
         # --------------------------------------------------------------------------------------------------
         # SOUS-ONGLET A : Localisation 
@@ -838,7 +842,11 @@ with tab_stats:
         # SOUS-ONGLET B : Sens de Transfert 
         # --------------------------------------------------------------------------------------------------
         with sub_tab_mach:
-            st.markdown("<small style='color: #6c757d;'>Erreur moyenne constatée selon la machine de départ et la machine d'arrivée.</small><br><br>", unsafe_allow_html=True)
+            st.markdown("<small style='color: #6c757d;'>Analyse par trajet de transfert et taux de dépassement du seuil clinique.</small><br>", unsafe_allow_html=True)
+
+            # --- NOUVEAUTÉ : Curseur pour choisir le seuil dynamique ---
+            seuil_alerte = st.number_input(" Définir le seuil d'alerte clinique (%) :", min_value=0.0, max_value=10.0, value=1.5, step=0.1)
+            st.markdown("<br>", unsafe_allow_html=True)
 
             # Utilise 'shift' pour coller la machine N-1 en face de la machine N
             df_mach = df_stats.copy()
@@ -856,22 +864,195 @@ with tab_stats:
                 # Concatène pour faire une jolie chaîne, exemple : "Tomo4 ➔ Radi7"
                 df_transitions['Trajet'] = df_transitions['Prev_Machine'] + " ➔ " + df_transitions['Machine']
                 
-                # Calcule la moyenne de l'erreur pour chaque couple
-                df_traj_mean = df_transitions.groupby('Trajet')['Error_pct'].mean().reset_index()
-                df_traj_mean = df_traj_mean.sort_values(by='Error_pct', ascending=False)
+                # Identifie les plans qui dépassent le seuil dynamique
+                df_transitions['Depasse_Seuil'] = df_transitions['Error_pct'] > seuil_alerte
                 
-                fig_mach = px.bar(
-                    df_traj_mean,
-                    x='Trajet',
+                # --- Filtre interactif ---
+                liste_trajets = sorted(df_transitions['Trajet'].unique())
+                trajet_choisi = st.selectbox(" Filtrer les compteurs et la répartition pour un trajet spécifique :", ["Tous les transferts (Global)"] + liste_trajets)
+                
+                # Filtrage dynamique selon le choix du menu déroulant
+                if trajet_choisi == "Tous les transferts (Global)":
+                    df_focus = df_transitions
+                    titre_pie = "Répartition Globale"
+                else:
+                    df_focus = df_transitions[df_transitions['Trajet'] == trajet_choisi]
+                    titre_pie = f"Répartition : {trajet_choisi}"
+                
+                # Calcul des KPI sur la donnée filtrée
+                total_focus = len(df_focus)
+                depassements_focus = df_focus['Depasse_Seuil'].sum()
+                taux_focus = (depassements_focus / total_focus * 100) if total_focus > 0 else 0
+                
+                # Affichage des 3 KPI dynamiques
+                col_kpi1, col_kpi2, col_kpi3 = st.columns(3)
+                col_kpi1.metric(f"Total de Transferts", total_focus)
+                col_kpi2.metric(f"Transferts > {seuil_alerte}% (Alerte)", int(depassements_focus))
+                col_kpi3.metric(f"Taux d'alerte", f"{taux_focus:.1f} %")
+                
+                st.markdown("---")
+                
+                col_chart1, col_chart2 = st.columns([2, 1])
+                
+                # Le graphique en barres reste GLOBAL pour toujours comparer les machines entre elles
+                df_traj_stats = df_transitions.groupby('Trajet').agg(
+                    Error_mean=('Error_pct', 'mean'),
+                    Depassement_rate=('Depasse_Seuil', lambda x: x.mean() * 100),
+                    Count=('Error_pct', 'count')
+                ).reset_index()
+                
+                df_traj_stats = df_traj_stats.sort_values(by='Error_mean', ascending=False)
+                
+                with col_chart1:
+                    fig_mach = px.bar(
+                        df_traj_stats,
+                        x='Trajet',
+                        y='Error_mean',
+                        title="Erreur Moyenne par Trajet (Vue Globale Comparative)",
+                        labels={
+                            'Trajet': 'Sens du transfert', 
+                            'Error_mean': 'Erreur Moyenne (%)',
+                            'Depassement_rate': f"Taux d'alerte (>{seuil_alerte}%)",
+                            'Count': 'Nombre de patients'
+                        },
+                        text_auto='.2f', 
+                        color='Error_mean', 
+                        color_continuous_scale='Oranges',
+                        hover_data={'Depassement_rate': ':.1f', 'Count': True}
+                    )
+                    
+                    fig_mach.update_traces(hovertemplate='<b>%{x}</b><br>Erreur Moyenne: %{y:.2f}%<br>Patients en alerte: %{customdata[0]:.1f}%<br>Nb total de patients: %{customdata[1]}<extra></extra>')
+                    fig_mach.update_layout(xaxis_tickangle=0, plot_bgcolor='rgba(0,0,0,0)', margin=dict(t=40, b=0, l=0, r=0))
+                    
+                    # La ligne rouge pointillée se déplace toute seule selon la valeur choisie !
+                    fig_mach.add_hline(y=seuil_alerte, line_dash="dash", line_color="red", annotation_text=f"Seuil ({seuil_alerte}%)")
+                    
+                    st.plotly_chart(fig_mach, use_container_width=True)
+
+                with col_chart2:
+                    # Le Pie Chart s'adapte au filtre ET au seuil dynamique !
+                    if total_focus > 0:
+                        fig_pie = px.pie(
+                            names=[f'< {seuil_alerte}% (Conformes)', f'> {seuil_alerte}% (Alertes)'],
+                            values=[total_focus - depassements_focus, depassements_focus],
+                            title=titre_pie,
+                            color_discrete_sequence=['#2ecc71', '#e74c3c'], 
+                            hole=0.4 
+                        )
+                        fig_pie.update_layout(margin=dict(t=40, b=0, l=0, r=0), showlegend=False)
+                        fig_pie.update_traces(textposition='inside', textinfo='percent+label')
+                        st.plotly_chart(fig_pie, use_container_width=True)
+                    else:
+                        st.info("Aucune donnée pour tracer le graphique.")
+
+        # --------------------------------------------------------------------------------------------------
+        # SOUS-ONGLET C : Évolution dans le Temps 
+        # --------------------------------------------------------------------------------------------------
+        with sub_tab_time:
+            st.markdown("<small style='color: #6c757d;'>Suivi temporel de l'erreur moyenne pour détecter la fatigue des machines (maintenance prédictive). <b>Les plans initiaux sont exclus.</b></small><br><br>", unsafe_allow_html=True)
+            
+            df_time = df_stats.copy()
+
+            # --- NOUVEAUTÉ : EXCLUSION DES PLANS INITIAUX ---
+            df_time = df_time.sort_values(by=['Patient_ID', 'Date_Time'])
+            df_time['session_num'] = df_time.groupby('Patient_ID').cumcount()
+            df_time = df_time[df_time['session_num'] > 0] # On ne garde que les transferts !
+            # ------------------------------------------------
+            
+            # CORRECTION : Le format DICOM rajoute souvent des millisecondes (ex: 20260512143022.123).
+            df_time['Date_Clean'] = df_time['Date_Time'].astype(str).str[:14]
+            df_time['True_Date'] = pd.to_datetime(df_time['Date_Clean'], format='%Y%m%d%H%M%S', errors='coerce')
+            
+            # Nettoie les lignes où la date DICOM était illisible
+            df_time = df_time.dropna(subset=['True_Date'])
+            
+            if len(df_time) == 0:
+                st.warning("Pas de dates valides trouvées pour tracer l'évolution.")
+            else:
+                # Choix dynamique de la précision du temps
+                granularite = st.radio(" Précision de la chronologie :", options=["Moyenne par Jour", "Moyenne par Semaine", "Moyenne par Mois"], horizontal=True)
+                
+                # Traduit le choix en code pour Pandas (D = Jour, W = Semaine, M = Mois)
+                if granularite == "Moyenne par Jour":
+                    freq = "D"
+                elif granularite == "Moyenne par Semaine":
+                    freq = "W"
+                else:
+                    freq = "M"
+
+                # Regroupe les dates selon le choix
+                df_time['Periode'] = df_time['True_Date'].dt.to_period(freq).dt.to_timestamp()
+                
+                # Calcule la moyenne d'erreur par période et par machine
+                df_trend = df_time.groupby(['Periode', 'Machine'])['Error_pct'].mean().reset_index()
+                
+                # Trace le graphique en ligne
+                fig_time = px.line(
+                    df_trend,
+                    x='Periode',
                     y='Error_pct',
-                    title="Erreur Moyenne selon le Couple de Transfert",
-                    labels={'Trajet': 'Sens du transfert', 'Error_pct': 'Erreur Moyenne (%)'},
-                    text_auto='.2f', 
-                    color='Error_pct', 
-                    color_continuous_scale='Oranges' 
+                    color='Machine',            
+                    markers=True,               
+                    title=f"Évolution Temporelle de l'Erreur ({granularite})",
+                    labels={'Periode': 'Date de traitement', 'Error_pct': 'Erreur Moyenne (%)', 'Machine': 'Machine Tomo'}
                 )
                 
-                fig_mach.update_layout(xaxis_tickangle=0, plot_bgcolor='rgba(0,0,0,0)', margin=dict(t=40, b=0, l=0, r=0))
-                fig_mach.add_hline(y=1.5, line_dash="dash", line_color="red", annotation_text="Seuil d'alerte (1.5%)")
+                fig_time.update_layout(plot_bgcolor='rgba(0,0,0,0)', margin=dict(t=40, b=0, l=0, r=0))
                 
-                st.plotly_chart(fig_mach, use_container_width=True)
+                # Récupère le seuil dynamique de l'onglet précédent (si défini, sinon 1.5 par défaut)
+                try:
+                    current_seuil = seuil_alerte
+                except NameError:
+                    current_seuil = 1.5
+                    
+                fig_time.add_hline(y=current_seuil, line_dash="dash", line_color="red", annotation_text=f"Seuil d'alerte ({current_seuil}%)")
+                
+                st.plotly_chart(fig_time, use_container_width=True)
+        # --------------------------------------------------------------------------------------------------
+        # SOUS-ONGLET D : Complexité vs Erreur (Analyse Physique)
+        # --------------------------------------------------------------------------------------------------
+        with sub_tab_complex:
+            st.markdown("<small style='color: #6c757d;'>Corrélation entre les paramètres cinématiques du plan (Vitesse de rotation, Vitesse de table) et les erreurs de transfert. <b>Les plans initiaux sont exclus.</b></small><br><br>", unsafe_allow_html=True)
+            
+            # Choix interactif pour l'utilisateur
+            param_choice = st.radio("Sélectionnez le paramètre physique en abscisse (X) :", options=["Gantry Period (Temps de rotation en s)", "Couch Speed (Vitesse de table en mm/s)"], horizontal=True)
+            
+            # Adapte la colonne de la base de données en fonction du choix
+            x_col = 'GP_s' if 'Gantry' in param_choice else 'CS_mm_s'
+            x_label = 'Gantry Period (s)' if 'Gantry' in param_choice else 'Couch Speed (mm/s)'
+            
+            # Nettoie les données (enlève les plans où le paramètre n'a pas été lu correctement)
+            df_complex = df_stats.dropna(subset=[x_col, 'Error_pct']).copy()
+            
+            # --- CORRECTION : EXCLUSION DES PLANS INITIAUX ---
+            # On recrée le compteur chronologique pour chaque patient
+            df_complex['session_num'] = df_complex.groupby('Patient_ID').cumcount()
+            # On ne garde que les transferts (les séances strictement supérieures à 0)
+            df_complex = df_complex[df_complex['session_num'] > 0]
+            # -------------------------------------------------
+            
+            # Sécurité supplémentaire pour éviter les valeurs aberrantes à 0 ou négatives
+            df_complex = df_complex[df_complex[x_col] > 0]
+            
+            if len(df_complex) == 0:
+                st.warning("Aucun transfert avec des données physiques valides n'est disponible pour générer le graphique.")
+            else:
+                # Création du nuage de points avec Plotly
+                fig_complex = px.scatter(
+                    df_complex,
+                    x=x_col,
+                    y='Error_pct',
+                    color='Machine',            # Différencie les machines par la couleur des points
+                    symbol='Treatment_Site',    # Change la forme du point selon la localisation
+                    hover_data=['Patient_ID', 'Raw_Treatment_Site'], # Infos supplémentaires quand on passe la souris
+                    title=f"Nuage de points : Impact du {x_label} sur l'Erreur (Hors plans initiaux)",
+                    labels={x_col: x_label, 'Error_pct': 'Erreur Moyenne (%)', 'Treatment_Site': 'Localisation'},
+                    opacity=0.75,               # Rend les points légèrement transparents s'ils se chevauchent
+                    size_max=10
+                )
+                
+                # Mise en page
+                fig_complex.update_layout(plot_bgcolor='rgba(0,0,0,0)', margin=dict(t=40, b=0, l=0, r=0))
+                fig_complex.add_hline(y=1.5, line_dash="dash", line_color="red", annotation_text="Seuil d'alerte (1.5%)")
+                
+                st.plotly_chart(fig_complex, use_container_width=True)
