@@ -87,7 +87,47 @@ def init_db():
 
 init_db() # Appelle la fonction pour s'assurer que la BDD est prête au lancement
 #===========================================================================================================
+#======= Catégorisation Dynamique ==========================================================================
+def load_categories(filepath="categories.txt"):
+    # Valeurs par défaut de secours
+    default_categories = {
+        "Sein & Paroi": ["sein", "paroi", "mam", "seins"],
+        "ORL": ["orl", "larynx", "pharynx", "cavite", "cervico"],
+        "Pelvis & Gynéco": ["pelvis", "prostate", "rectum", "col", "vagin", "anal", "vessie", "gyneco"],
+        "Cérébral": ["cerveau", "encephale", "crane", "cereb", "stereotaxie"],
+        "Thorax & Poumon": ["poumon", "thorax", "mediastin"],
+        "Abdomen": ["abdomen", "foie", "pancreas", "estomac"],
+        "Hémato & Ganglionnaire": ["hodgkin", "lymphome", "manteau", "ganglion", "rtni"]
+    }
 
+    # Crée le fichier texte avec les valeurs par défaut s'il n'existe pas
+    if not os.path.exists(filepath):
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write("# Fichier de configuration des localisations anatomiques\n")
+            f.write("# Format : Nom de la Catégorie=motclé1, motclé2, motclé3\n\n")
+            for cat, words in default_categories.items():
+                f.write(f"{cat}={', '.join(words)}\n")
+        return default_categories
+
+    # Lit le fichier s'il existe déjà
+    categories = {}
+    with open(filepath, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            # Ignore les lignes vides ou les commentaires (commençant par #)
+            if not line or "=" not in line or line.startswith("#"):
+                continue
+            
+            cat, words_str = line.split("=", 1)
+            # Nettoie les mots (enlève les espaces inutiles et force la minuscule)
+            words = [w.strip().lower() for w in words_str.split(",")]
+            categories[cat.strip()] = words
+            
+    return categories
+
+# On charge le dictionnaire une seule fois au lancement de l'application
+CATEGORIES_DICT = load_categories()
+#===========================================================================================================
 #======= Sinogram Extraction ===============================================================================
 def get_sinogram(plan):
     NCP = plan.BeamSequence[0].NumberOfControlPoints  # Récupère le nombre de points de contrôle
@@ -137,24 +177,14 @@ def general_info(plan):
         plan_info["raw_site"] = "Erreur lecture"
         texte_brut = ""
 
-    #===================AUTO-CATÉGORISATION================================================================
+   #===================AUTO-CATÉGORISATION================================================================
     texte_minuscule = texte_brut.lower() # Convertit tout en minuscules pour faciliter la recherche
-    if any(mot in texte_minuscule for mot in ["sein", "paroi", "mam","seins"]):
-        plan_info["treatment_site"] = "Sein & Paroi"
-    elif any(mot in texte_minuscule for mot in ["orl", "larynx", "pharynx", "cavite", "cervico"]):
-        plan_info["treatment_site"] = "ORL"
-    elif any(mot in texte_minuscule for mot in ["pelvis", "prostate", "rectum", "col", "vagin", "anal", "vessie", "gyneco"]):
-        plan_info["treatment_site"] = "Pelvis & Gynéco"
-    elif any(mot in texte_minuscule for mot in ["cerveau", "encephale", "crane", "cereb", "stereotaxie"]):
-        plan_info["treatment_site"] = "Cérébral"
-    elif any(mot in texte_minuscule for mot in ["poumon", "thorax", "mediastin"]):
-        plan_info["treatment_site"] = "Thorax & Poumon"
-    elif any(mot in texte_minuscule for mot in ["abdomen", "foie", "pancreas", "estomac"]):
-        plan_info["treatment_site"] = "Abdomen"
-    elif any(mot in texte_minuscule for mot in ["hodgkin", "lymphome", "manteau", "ganglion", "rtni"]):
-        plan_info["treatment_site"] = "Hémato & Ganglionnaire"
-    else:
-        plan_info["treatment_site"] = "Inconnu" # Par défaut si aucun mot connu n'est trouvé
+    plan_info["treatment_site"] = "Inconnu" # Valeur par défaut
+    
+    for category, keywords in CATEGORIES_DICT.items():
+        if any(mot in texte_minuscule for mot in keywords):
+            plan_info["treatment_site"] = category
+            break # On s'arrête de chercher dès qu'on a trouvé une correspondance
     #======================================================================================================
 
     #========= mapping ====================================================================================
@@ -168,7 +198,7 @@ def general_info(plan):
     return plan_info
     #===========================================================================================================
 
-#======= Physics Parameters Extraction =====================================================================
+# region Traitement des fichiers DICOM 
 def delivery_info(plan): 
     delivery = {}
     delivery["GP"] = float(plan.BeamSequence[0][0x300d,0x1040].value)  # Gantry Period (Temps de rotation)
@@ -186,25 +216,26 @@ def delivery_info(plan):
         delivery["DS"] = 0.0
         delivery["Nb_Frac"] = 1
     return delivery
-#===========================================================================================================
+# endregion
 
+#======= Error Calculation =================================================================================
 #======= Error Calculation =================================================================================
 def get_error_shift(sinogram, delivery):
     PT = delivery["PT"] 
-    LOT_sino = PT*sinogram                    # Temps d'ouverture des lames par projection
+    LOT_sino = PT*sinogram                    # Temps d'ouverture des lames par projection 
     maxLOT = np.max(LOT_sino)                 # Temps d'ouverture maximum
     total_lot = np.sum(LOT_sino)              # Temps d'ouverture cumulé sur tout le plan
     open_leaves_LOT = LOT_sino[np.nonzero(LOT_sino)]  # Filtre uniquement les lames qui s'ouvrent
     thresh = 18  
     undisc_LCT = 0                            # Compteur pour les erreurs LCT non discriminables
         
-    error_per_projection = np.zeros(LOT_sino.shape[0]) # Stockage des erreurs par angle (pour le graphe polaire)
+    error_per_projection = np.zeros(LOT_sino.shape[0]) # Stockage des erreurs par angle en MILLISECONDES
     
     # Conditions pour détecter un décalage potentiel des lames (Leaf Shift)
     cond1 = LOT_sino < (maxLOT-1)  
     cond2 = LOT_sino > (PT-thresh) 
     row, col = np.where(cond1 & cond2) 
-                                       
+                                            
     for i in range(len(row)):
         if row[i] < (LOT_sino.shape[0] - 1):             
             if (LOT_sino[row[i]+1, col[i]] > (PT-20)): 
@@ -221,12 +252,11 @@ def get_error_shift(sinogram, delivery):
     for i in range(len(filtered_row)-1):
         diff = (PT - LOT_sino[filtered_row[i], filtered_col[i]]) 
         extra_time += diff  
-        error_per_projection[filtered_row[i]] += diff 
+        error_per_projection[filtered_row[i]] += diff # Cumul des temps d'erreur en ms
     
-    error_per_projection_pct = (error_per_projection / total_lot) * 100 
-    
-    # Retourne l'erreur transfert, l'uLCT et le profil d'erreur complet
-    return ((extra_time/total_lot)*100), ((undisc_LCT/(len(open_leaves_LOT)))*100), error_per_projection_pct
+    # Retourne l'erreur transfert (%), l'uLCT (%) et le profil d'erreur complet (en ms)
+    return ((extra_time/total_lot)*100), ((undisc_LCT/(len(open_leaves_LOT)))*100), error_per_projection
+#===========================================================================================================
 #===========================================================================================================
 
 #======= File Reading ======================================================================================
@@ -280,9 +310,11 @@ def display_dashboard(raw_data):
         st.markdown("<small style='color: #6c757d;'>Si le nom récupéré du DICOM comporte une faute de frappe ou est illisible, vous pouvez forcer un nom standard ici.</small>", unsafe_allow_html=True)
         col1, col2 = st.columns([3, 1])
         
-        # Définition des catégories standards pour les statistiques
-        liste_sites_propres = ["Sein & Paroi", "ORL", "Pelvis & Gynéco", "Cérébral", "Thorax & Poumon", "Abdomen", "Hémato & Ganglionnaire", "Autre", "Inconnu"]
         
+        
+        # Définition des catégories standards dynamiques (récupérées du fichier texte)
+        liste_sites_propres = list(CATEGORIES_DICT.keys()) + ["Autre", "Inconnu"]
+
         # Définit l'index du menu déroulant pour qu'il affiche la valeur actuelle
         if site_traitement not in liste_sites_propres:
             options_affichage = [site_traitement] + liste_sites_propres
@@ -578,10 +610,10 @@ def display_dashboard(raw_data):
                     start = (rotation_target - 1) * 51 
                     end = start + 51
                     slice_errors = total_errors[start:end] # Découpe le tableau pour n'afficher que 51 angles
-                    caption_text = f"Dose excess on rotation {rotation_target} (Gantry 0° - 360°)."
+                    caption_text = f"Temps d'erreur sur la rotation {rotation_target} (Gantry 0° - 360°)."
                 else:
                     slice_errors = total_errors
-                    caption_text = "Dose excess over 1 rotation (Gantry 0° - 360°)."
+                    caption_text = "Temps d'erreur sur 1 rotation (Gantry 0° - 360°)."
                 
                 # Configuration de Matplotlib pour tracer le cercle
                 N_total = len(slice_errors)
@@ -614,7 +646,8 @@ def display_dashboard(raw_data):
                 tick_values = [max_err_global * 0.25, max_err_global * 0.5, max_err_global * 0.75, max_err_global]
                 ax.set_yticks(tick_values) 
                 
-                labels_ticks = [f"{val:.3f}%" for val in tick_values]
+                # === MODIFICATION ICI : ms au lieu de % ===
+                labels_ticks = [f"{val:.1f} ms" for val in tick_values]
                 ax.set_yticklabels(labels_ticks, fontsize=7, color='#d32f2f', fontweight='bold') 
                 
                 ax.set_rlabel_position(25)
@@ -624,7 +657,6 @@ def display_dashboard(raw_data):
                 st.caption(caption_text)
             else:
                 st.info("No error detected in the selected session.")
-#===========================================================================================================
 
 #======= BARRE LATÉRALE (Menu Ingestion) ===================================================================
 st.sidebar.image("logo.png", use_container_width=True)
@@ -800,6 +832,10 @@ with tab_patient:
 with tab_stats:
     st.markdown("###  Analyse Statistique du Service")
 
+    # --- NOUVEAUTÉ : Curseur pour choisir le seuil dynamique ---
+    seuil_alerte = st.number_input(" Définir le seuil d'alerte clinique (%) :", min_value=0.0, max_value=10.0, value=1.5, step=0.1)
+    st.markdown("<br>", unsafe_allow_html=True)
+
     # 1. Connexion et extraction globale (Aspire toute la table)
     conn_stats = sqlite3.connect(DB_NAME)
     df_stats = pd.read_sql_query("SELECT Patient_ID, Date_Time, Machine, Treatment_Site, Raw_Treatment_Site, Error_pct, GP_s, CS_mm_s FROM SESSIONS", conn_stats)
@@ -811,12 +847,13 @@ with tab_stats:
         # Trie par Patient et par Date pour que les calculs de chronologie (shift, cumcount) fonctionnent bien
         df_stats = df_stats.sort_values(by=['Patient_ID', 'Date_Time'])
         
-        # --- CRÉATION DES SOUS-ONGLETS (Ajout du 3ème onglet temporel) ---
-        sub_tab_loc, sub_tab_mach, sub_tab_time, sub_tab_complex = st.tabs([
+        # --- CRÉATION DES SOUS-ONGLETS ---
+        sub_tab_loc, sub_tab_mach, sub_tab_time, sub_tab_complex, sub_tab_dernier = st.tabs([
             " Par Localisation", 
             " Par Sens de Transfert", 
             " Évolution dans le Temps",
-            " Complexité vs Erreur"
+            " Complexité vs Erreur",
+            " Tous les patients"
         ])
 
        
@@ -826,9 +863,6 @@ with tab_stats:
         with sub_tab_loc:
             st.markdown("<small style='color: #6c757d;'>Erreur moyenne des transferts par zone traitée (Plans initiaux exclus).</small><br>", unsafe_allow_html=True)
             
-            # Curseur de seuil dynamique
-            seuil_alerte = st.number_input(" Définir le seuil d'alerte clinique (%) :", min_value=0.0, max_value=10.0, value=1.5, step=0.1, key="seuil_loc")
-            st.markdown("<br>", unsafe_allow_html=True)
             
             df_loc = df_stats.dropna(subset=['Treatment_Site']).copy()
             df_loc['session_num'] = df_loc.groupby('Patient_ID').cumcount() 
@@ -845,7 +879,7 @@ with tab_stats:
                     df_mean_loc,
                     x='Treatment_Site',
                     y='Error_pct',
-                    title="Erreur Moyenne par Catégorie Clinique",
+                    title="Erreur Moyenne par catégorie de localisation",
                     labels={'Treatment_Site': 'Localisation Anatomique', 'Error_pct': 'Erreur Moyenne (%)'},
                     text_auto='.2f', 
                     color='Error_pct', 
@@ -863,57 +897,50 @@ with tab_stats:
         with sub_tab_mach:
             st.markdown("<small style='color: #6c757d;'>Analyse par trajet de transfert et taux de dépassement du seuil clinique.</small><br>", unsafe_allow_html=True)
 
-            # --- NOUVEAUTÉ : Curseur pour choisir le seuil dynamique ---
-            seuil_alerte = st.number_input(" Définir le seuil d'alerte clinique (%) :", min_value=0.0, max_value=10.0, value=1.5, step=0.1)
-            st.markdown("<br>", unsafe_allow_html=True)
-
-            # Utilise 'shift' pour coller la machine N-1 en face de la machine N
+           #========== enleve la tomo initial=========================================
             df_mach = df_stats.copy()
             df_mach['Prev_Machine'] = df_mach.groupby('Patient_ID')['Machine'].shift(1)
-            
-            # On supprime les lignes initiales (qui n'ont logiquement pas de machine N-1)
             df_transitions = df_mach.dropna(subset=['Prev_Machine']).copy()
-            
-            # Ne garde que les cas où la machine N est différente de la N-1
             df_transitions = df_transitions[df_transitions['Machine'] != df_transitions['Prev_Machine']]
-            
+            #=========================================================================
+
+            #============== filtré les données ================================================================
             if len(df_transitions) == 0:
                 st.info("Aucun changement inter-machines détecté dans la base pour le moment.")
             else:
-                # Concatène pour faire une jolie chaîne, exemple : "Tomo4 ➔ Radi7"
-                df_transitions['Trajet'] = df_transitions['Prev_Machine'] + " ➔ " + df_transitions['Machine']
-                
-                # Identifie les plans qui dépassent le seuil dynamique
-                df_transitions['Depasse_Seuil'] = df_transitions['Error_pct'] > seuil_alerte
+                df_transitions['Trajet'] = df_transitions['Prev_Machine'] + " ➔ " + df_transitions['Machine']    # "Tomo4 ➔ Radi7"
+                df_transitions['Depasse_Seuil'] = df_transitions['Error_pct'] > seuil_alerte # Identifie les plans qui dépassent le seuil dynamique
                 
                 # --- Filtre interactif ---
                 liste_trajets = sorted(df_transitions['Trajet'].unique())
                 trajet_choisi = st.selectbox(" Filtrer les compteurs et la répartition pour un trajet spécifique :", ["Tous les transferts (Global)"] + liste_trajets)
-                
-                # Filtrage dynamique selon le choix du menu déroulant
-                if trajet_choisi == "Tous les transferts (Global)":
+                if trajet_choisi == "Tous les transferts (Global)": # Filtrage dynamique selon le choix du menu déroulant
                     df_focus = df_transitions
                     titre_pie = "Répartition Globale"
                 else:
                     df_focus = df_transitions[df_transitions['Trajet'] == trajet_choisi]
                     titre_pie = f"Répartition : {trajet_choisi}"
+            #=================================================================================================
+
                 
-                # Calcul des KPI sur la donnée filtrée
+                #=====================Calcul des KPI sur la donnée filtrée=============================
                 total_focus = len(df_focus)
                 depassements_focus = df_focus['Depasse_Seuil'].sum()
                 taux_focus = (depassements_focus / total_focus * 100) if total_focus > 0 else 0
                 
-                # Affichage des 3 KPI dynamiques
+                #Affichage des 3 KPI dynamiques
                 col_kpi1, col_kpi2, col_kpi3 = st.columns(3)
                 col_kpi1.metric(f"Total de Transferts", total_focus)
                 col_kpi2.metric(f"Transferts > {seuil_alerte}% (Alerte)", int(depassements_focus))
                 col_kpi3.metric(f"Taux d'alerte", f"{taux_focus:.1f} %")
                 
                 st.markdown("---")
-                
+                #================================================================================
+
+                #====== appel des graphiques erreur moyenne et reparttion globale ==========================
                 col_chart1, col_chart2 = st.columns([2, 1])
                 
-                # Le graphique en barres reste GLOBAL pour toujours comparer les machines entre elles
+                
                 df_traj_stats = df_transitions.groupby('Trajet').agg(
                     Error_mean=('Error_pct', 'mean'),
                     Depassement_rate=('Depasse_Seuil', lambda x: x.mean() * 100),
@@ -941,7 +968,7 @@ with tab_stats:
                     )
                     
                     fig_mach.update_traces(hovertemplate='<b>%{x}</b><br>Erreur Moyenne: %{y:.2f}%<br>Patients en alerte: %{customdata[0]:.1f}%<br>Nb total de patients: %{customdata[1]}<extra></extra>')
-                    fig_mach.update_layout(xaxis_tickangle=0, plot_bgcolor='rgba(0,0,0,0)', margin=dict(t=40, b=0, l=0, r=0))
+                    fig_mach.update_layout(xaxis_tickangle=0, plot_bgcolor='rgba(0,0,0,0)', margin=dict(t=30, b=0, l=0, r=0))
                     
                     # La ligne rouge pointillée se déplace toute seule selon la valeur choisie !
                     fig_mach.add_hline(y=seuil_alerte, line_dash="dash", line_color="red", annotation_text=f"Seuil ({seuil_alerte}%)")
@@ -973,7 +1000,7 @@ with tab_stats:
 
             df_time = df_stats.copy()
 
-            # --- NOUVEAUTÉ : EXCLUSION DES PLANS INITIAUX ---
+            # --- EXCLUSION DES PLANS INITIAUX ---
             df_time = df_time.sort_values(by=['Patient_ID', 'Date_Time'])
             df_time['session_num'] = df_time.groupby('Patient_ID').cumcount()
             df_time = df_time[df_time['session_num'] > 0] # On ne garde que les transferts !
@@ -1006,13 +1033,48 @@ with tab_stats:
                 # Calcule la moyenne d'erreur par période et par machine
                 df_trend = df_time.groupby(['Periode', 'Machine'])['Error_pct'].mean().reset_index()
                 
+                # === Ajout des KPIs de dérive ============================
+                st.markdown("#### Dynamique de l'erreur (Dernière période vs Précédente)")
+                
+                # Trie les machines par ordre alphabétique pour figer l'affichage (ex: Radi7, Tomo2, Tomo4)
+                machines_presentes = sorted(df_trend['Machine'].unique())
+                
+                if len(machines_presentes) > 0:
+                    colonnes_kpi = st.columns(len(machines_presentes))
+                    
+                    for i, mach in enumerate(machines_presentes):
+                        # Isole les données de la machine et les trie par ordre chronologique
+                        df_mach = df_trend[df_trend['Machine'] == mach].sort_values(by='Periode')
+                        
+                        if len(df_mach) >= 2:
+                            current_err = df_mach.iloc[-1]['Error_pct']  # Dernière période
+                            previous_err = df_mach.iloc[-2]['Error_pct'] # Période juste avant
+                            delta_err = current_err - previous_err
+                            
+                            colonnes_kpi[i].metric(
+                                label=f"Tendance {mach}",
+                                value=f"{current_err:.2f} %",
+                                delta=f"{delta_err:+.2f} %",
+                                delta_color="inverse" # Inverse : hausse (positif) = rouge = mauvais
+                            )
+                        else:
+                            current_err = df_mach.iloc[-1]['Error_pct']
+                            colonnes_kpi[i].metric(
+                                label=f"Tendance {mach}",
+                                value=f"{current_err:.2f} %",
+                                delta="Donnée unique",
+                                delta_color="off"
+                            )
+                    st.markdown("<br>", unsafe_allow_html=True)
+                # ==============================================================================
+
                 # Trace le graphique en ligne
                 fig_time = px.line(
                     df_trend,
                     x='Periode',
                     y='Error_pct',
                     color='Machine',            
-                    markers=True,               
+                    markers=True,                
                     title=f"Évolution Temporelle de l'Erreur ({granularite})",
                     labels={'Periode': 'Date de traitement', 'Error_pct': 'Erreur Moyenne (%)', 'Machine': 'Machine Tomo'}
                 )
@@ -1068,11 +1130,145 @@ with tab_stats:
                     title=f"Nuage de points : Impact du {x_label} sur l'Erreur (Hors plans initiaux)",
                     labels={x_col: x_label, 'Error_pct': 'Erreur Moyenne (%)', 'Treatment_Site': 'Localisation'},
                     opacity=0.75,               # Rend les points légèrement transparents s'ils se chevauchent
-                    size_max=10
+                    size_max=10,
+                    trendline="ols",            # === NOUVEAUTÉ : Ligne de tendance de régression linéaire ===
+                    trendline_scope="overall"   # === NOUVEAUTÉ : Une seule ligne globale pour tout le nuage ===
                 )
                 
                 # Mise en page
-                fig_complex.update_layout(plot_bgcolor='rgba(0,0,0,0)', margin=dict(t=40, b=0, l=0, r=0))
+                fig_complex.update_layout(plot_bgcolor='rgba(0,0,0,0)', margin=dict(t=40, b=50, l=0, r=0))
                 fig_complex.add_hline(y=1.5, line_dash="dash", line_color="red", annotation_text="Seuil d'alerte (1.5%)")
                 
+                # === Indicateurs de vitesse sous l'axe X ===
+                if x_col == 'GP_s':
+                    # Gantry Period : Temps court = Rapide, Temps long = Lent
+                    fig_complex.add_annotation(
+                        text="← Rotation rapide", xref="paper", yref="paper",
+                        x=0, y=-0.15, showarrow=False,
+                        font=dict(size=12, color="#7f8c8d", style="italic")
+                    )
+                    fig_complex.add_annotation(
+                        text="Rotation lente →", xref="paper", yref="paper",
+                        x=1, y=-0.15, showarrow=False,
+                        font=dict(size=12, color="#7f8c8d", style="italic")
+                    )
+                elif x_col == 'CS_mm_s':
+                    # Couch Speed : Petite vitesse = Lent, Grande vitesse = Rapide
+                    fig_complex.add_annotation(
+                        text="← Table lente", xref="paper", yref="paper",
+                        x=0, y=-0.15, showarrow=False,
+                        font=dict(size=12, color="#7f8c8d", style="italic")
+                    )
+                    fig_complex.add_annotation(
+                        text="Table rapide →", xref="paper", yref="paper",
+                        x=1, y=-0.15, showarrow=False,
+                        font=dict(size=12, color="#7f8c8d", style="italic")
+                    )
+                # =================================================================
+
                 st.plotly_chart(fig_complex, use_container_width=True)
+        # --------------------------------------------------------------------------------------------------
+        # SOUS-ONGLET E : Tous les Patients (Contrôle Rapide)
+        # --------------------------------------------------------------------------------------------------
+        with sub_tab_dernier:
+            st.markdown("###  Contrôle Qualité Global du Service")
+            st.markdown("<small style='color: #6c757d;'>Ce tableau récapitule l'état actuel de tous les patients. Il s'allume automatiquement en rouge si le dernier transfert connu dépasse le seuil de tolérance clinique ou génère un risque de dépassement de dose.</small><br><br>", unsafe_allow_html=True)
+            
+            # Connexion pour récupérer tout l'historique avec les noms des patients
+            conn_all = sqlite3.connect(DB_NAME)
+            cursor_all = conn_all.cursor()
+            cursor_all.execute("""
+                SELECT s.Patient_ID, p.Full_Name, s.Machine, s.Dose_Gy, s.Nb_Frac, s.Error_pct, s.Treatment_Site, s.Display_Date, s.Date_Time
+                FROM SESSIONS s
+                JOIN PATIENTS p ON s.Patient_ID = p.Patient_ID
+                ORDER BY s.Date_Time ASC
+            """)
+            toutes_sessions = cursor_all.fetchall()
+            conn_all.close()
+
+            if len(toutes_sessions) == 0:
+                st.info("La base de données est vide.")
+            else:
+                # Regroupe l'historique par ID Patient
+                patients_dict = {}
+                for row in toutes_sessions:
+                    pid = row[0]
+                    if pid not in patients_dict:
+                        patients_dict[pid] = []
+                    patients_dict[pid].append(row)
+                
+                tableau_final = []
+                
+                # Analyse du dernier statut pour chaque patient
+                for pid, sessions in patients_dict.items():
+                    plan_initial = sessions[0]
+                    plan_actuel = sessions[-1] # On regarde uniquement le dernier état connu
+                    
+                    nom_patient = plan_actuel[1]
+                    machine_actuelle = plan_actuel[2]
+                    dose_actuelle = plan_actuel[3]
+                    frac_restantes = plan_actuel[4]
+                    erreur_actuelle = plan_actuel[5]
+                    site = plan_actuel[6]
+                    date_display = plan_actuel[7]
+                    date_sort = plan_actuel[8] # Utilisé uniquement pour le tri caché
+                    
+                    if len(sessions) > 1: # Si le patient a subi au moins un transfert
+                        # Calcul du budget initial autorisé
+                        dose_init = plan_initial[3]
+                        frac_init = plan_initial[4]
+                        budget_theorique = (dose_init * frac_init) + 0.5
+                        
+                        # Test des conditions d'alerte
+                        alerte_erreur = erreur_actuelle > seuil_alerte
+                        dose_reelle_seance = dose_actuelle * (1 + (erreur_actuelle / 100.0))
+                        alerte_seances = (dose_reelle_seance * frac_restantes) > budget_theorique
+                        
+                        # Définition du texte d'alerte spécifique
+                        if alerte_erreur and alerte_seances:
+                            statut = "🔴 % Trop haut & Problème séances"
+                        elif alerte_erreur:
+                            statut = "🔴 % Trop haut"
+                        elif alerte_seances:
+                            statut = "🔴 Problème séances"
+                        else:
+                            statut = "🟢 Conforme"
+                        
+                        erreur_str = f"{erreur_actuelle:.2f} %"
+                    else: # S'il n'a fait que son plan initial
+                        statut = "⚪ Plan Initial"
+                        erreur_str = "-"
+                    
+                    # Ajoute la ligne au tableau
+                    tableau_final.append({
+                        "Date_Sort": date_sort, 
+                        "Date (Dernier import)": date_display,
+                        "ID Patient": pid,
+                        "Nom": nom_patient,
+                        "Localisation": site,
+                        "Machine Actuelle": machine_actuelle,
+                        "Erreur Transfert": erreur_str,
+                        "Statut": statut
+                    })
+                
+                # Création du DataFrame et tri chronologique (les plus récents en haut)
+                df_recap = pd.DataFrame(tableau_final)
+                df_recap = df_recap.sort_values(by="Date_Sort", ascending=False).drop(columns=["Date_Sort"])
+                
+                # Fonction pour appliquer le code couleur de manière ciblée
+                def colorer_statut(row):
+                    return [
+                        'color: #c62828; font-weight: bold' if col == 'Statut' and "🔴" in row['Statut'] 
+                        else 'color: #9e9e9e; font-style: italic' if "⚪" in row['Statut'] 
+                        else '' 
+                        for col in row.index
+                    ]
+                
+                # Affichage du grand tableau stylisé
+                st.dataframe(
+                    df_recap.style.apply(colorer_statut, axis=1),
+                    use_container_width=True,
+                    hide_index=True,
+                    height=500
+                )
+

@@ -1,0 +1,10 @@
+# Fichier de configuration des localisations anatomiques
+# Format : Nom de la Catégorie=motclé1, motclé2, motclé3
+
+Sein & Paroi=sein, paroi, mam, seins
+ORL=orl, larynx, pharynx, cavite, cervico
+Pelvis & Gynéco=pelvis, prostate, rectum, col, vagin, anal, vessie, gyneco
+Cérébral=cerveau, encephale, crane, cereb, stereotaxie
+Thorax & Poumon=poumon, thorax, mediastin
+Abdomen=abdomen, foie, pancreas, estomac
+Hémato & Ganglionnaire=hodgkin, lymphome, manteau, ganglion, rtni
