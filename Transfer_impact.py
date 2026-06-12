@@ -1,45 +1,22 @@
-#======= Import libraries ===============================================================================
-import streamlit as st          # Bibliothèque pour créer l'interface web interactive
-import pydicom as dcm           # Pour lire et manipuler les fichiers médicaux DICOM
-import numpy as np              # Pour les calculs mathématiques et la gestion des matrices (sinogrammes)
-import pandas as pd             # Pour manipuler les tableaux de données et faciliter les statistiques
-import os                       # Pour interagir avec le système de fichiers (dossiers, chemins)
-import shutil                   # Pour déplacer des fichiers (archivage)
-import matplotlib.pyplot as plt # Pour tracer le graphique polaire (localisation angulaire)
-import time                     # Pour ajouter des petites pauses (ex: après un message de succès)
-import sqlite3                  # Pour gérer la base de données locale SQL
-import json                     # Pour stocker les matrices complexes (Profile_Error) en texte dans la base
-import plotly.express as px     # Pour créer des graphiques statistiques interactifs (barres)
-#===========================================================================================================
+#region 1-Importation des bibliothèques
+import pydicom as dcm            # Pour lire et manipuler les fichiers médicaux DICOM
+import numpy as np               # Pour les calculs mathématiques et la gestion des matrices
+import pandas as pd              # Pour manipuler les tableaux de données
+import os                        # Pour interagir avec le système de fichiers
+import shutil                    # Pour déplacer des fichiers (archivage)
+import matplotlib.pyplot as plt  # Pour tracer le graphique polaire
+import time                      # Pour ajouter des petites pauses
+import sqlite3                   # Pour gérer la base de données locale SQL
+import json                      # Pour stocker les matrices complexes en texte
+import plotly.express as px      # Pour créer des graphiques statistiques interactifs
+import streamlit as st           # Bibliothèque pour créer l'interface web interactive
+#endregion
 
 #======= Page Configuration ================================================================================
 # Configure le titre de l'onglet du navigateur et utilise toute la largeur de l'écran
 st.set_page_config(page_title="Tomo Transfer", layout="wide")
 #===========================================================================================================
-#======= Amélioration visuelle des onglets =================================================================
 
-st.markdown("""
-    <style>
-    /* Augmente la taille et le contraste des onglets */
-    button[data-baseweb="tab"] {
-        font-size: 24px !important; 
-        font-weight: 800 !important;
-        padding: 20px 60px !important;
-        background-color: #f0f2f6 !important;
-        border-radius: 10px 10px 0 0 !important;
-        border: 2px solid #d3d3d3 !important;
-    }
-    /* Ajoute un effet de surbrillance quand on passe la souris dessus */
-    button[data-baseweb="tab"]:hover {
-        background-color: #e0e0e0 !important;
-    }
-    /* Espace entre les onglets */
-    div[data-baseweb="tab-list"] {
-        gap: 30px;
-    }
-    </style>
-""", unsafe_allow_html=True)
-#===========================================================================================================
 #===========================================================================================================
 #======= Automatic Folder & Database Setup =================================================================
 DIR_IN = r"\\nasdata1\TOMO\Transfert_tomo"  # Chemin du dossier où les nouveaux DICOM sont déposés
@@ -78,7 +55,7 @@ def init_db():
         Error_pct REAL,
         Profile_JSON TEXT,
         CS_mm_s REAL,    
-        GP_s REAL,       
+        GP_s REAL,        
         FOREIGN KEY (Patient_ID) REFERENCES PATIENTS(Patient_ID)
     )
     ''')
@@ -87,28 +64,10 @@ def init_db():
 
 init_db() # Appelle la fonction pour s'assurer que la BDD est prête au lancement
 #===========================================================================================================
+
 #======= Catégorisation Dynamique ==========================================================================
 def load_categories(filepath="categories.txt"):
-    # Valeurs par défaut de secours
-    default_categories = {
-        "Sein & Paroi": ["sein", "paroi", "mam", "seins"],
-        "ORL": ["orl", "larynx", "pharynx", "cavite", "cervico"],
-        "Pelvis & Gynéco": ["pelvis", "prostate", "rectum", "col", "vagin", "anal", "vessie", "gyneco"],
-        "Cérébral": ["cerveau", "encephale", "crane", "cereb", "stereotaxie"],
-        "Thorax & Poumon": ["poumon", "thorax", "mediastin"],
-        "Abdomen": ["abdomen", "foie", "pancreas", "estomac"],
-        "Hémato & Ganglionnaire": ["hodgkin", "lymphome", "manteau", "ganglion", "rtni"]
-    }
-
-    # Crée le fichier texte avec les valeurs par défaut s'il n'existe pas
-    if not os.path.exists(filepath):
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write("# Fichier de configuration des localisations anatomiques\n")
-            f.write("# Format : Nom de la Catégorie=motclé1, motclé2, motclé3\n\n")
-            for cat, words in default_categories.items():
-                f.write(f"{cat}={', '.join(words)}\n")
-        return default_categories
-
+   
     # Lit le fichier s'il existe déjà
     categories = {}
     with open(filepath, "r", encoding="utf-8") as f:
@@ -127,7 +86,18 @@ def load_categories(filepath="categories.txt"):
 
 # On charge le dictionnaire une seule fois au lancement de l'application
 CATEGORIES_DICT = load_categories()
+
 #===========================================================================================================
+#======= Données Globales (CACHE) ==========================================================================
+@st.cache_data
+def charger_donnees_globales():
+    conn = sqlite3.connect(DB_NAME)
+    query = "SELECT Patient_ID, Date_Time, Machine, Treatment_Site, Raw_Treatment_Site, Error_pct, GP_s, CS_mm_s FROM SESSIONS"
+    df = pd.read_sql_query(query, conn)
+    conn.close()
+    return df
+#===========================================================================================================
+
 #======= Sinogram Extraction ===============================================================================
 def get_sinogram(plan):
     NCP = plan.BeamSequence[0].NumberOfControlPoints  # Récupère le nombre de points de contrôle
@@ -140,7 +110,7 @@ def get_sinogram(plan):
             tmp = tmp.decode('utf-8').strip('\x00').split('\\') # Décode et nettoie la chaîne de caractères
             sinogram[cp-1,:] = np.array(tmp,dtype=np.float64)   # Convertit en nombres et remplit la matrice
         except KeyError:
-            continue                                  # Ignore s'il n'y a pas de données pour ce point
+            continue                                         # Ignore s'il n'y a pas de données pour ce point
     return sinogram 
 #===========================================================================================================
 
@@ -150,7 +120,7 @@ def general_info(plan):
     plan_info["patient_id"] = str(plan.PatientID)     # Extrait l'ID du patient
     plan_info["patient_name"] = str(plan.PatientName) # Extrait le nom brut du patient
     
-    # --- 1. ASPIRATEUR DU NOM BRUT ---
+    # --- recherche du nom du plan ---
     try:
         valeurs_trouvees = []
         # Cherche le nom du plan dans plusieurs balises DICOM (TPS potentiellement différents)
@@ -219,7 +189,6 @@ def delivery_info(plan):
 # endregion
 
 #======= Error Calculation =================================================================================
-#======= Error Calculation =================================================================================
 def get_error_shift(sinogram, delivery):
     PT = delivery["PT"] 
     LOT_sino = PT*sinogram                    # Temps d'ouverture des lames par projection 
@@ -256,7 +225,6 @@ def get_error_shift(sinogram, delivery):
     
     # Retourne l'erreur transfert (%), l'uLCT (%) et le profil d'erreur complet (en ms)
     return ((extra_time/total_lot)*100), ((undisc_LCT/(len(open_leaves_LOT)))*100), error_per_projection
-#===========================================================================================================
 #===========================================================================================================
 
 #======= File Reading ======================================================================================
@@ -310,8 +278,6 @@ def display_dashboard(raw_data):
         st.markdown("<small style='color: #6c757d;'>Si le nom récupéré du DICOM comporte une faute de frappe ou est illisible, vous pouvez forcer un nom standard ici.</small>", unsafe_allow_html=True)
         col1, col2 = st.columns([3, 1])
         
-        
-        
         # Définition des catégories standards dynamiques (récupérées du fichier texte)
         liste_sites_propres = list(CATEGORIES_DICT.keys()) + ["Autre", "Inconnu"]
 
@@ -341,8 +307,8 @@ def display_dashboard(raw_data):
                 conn_update.commit()
                 conn_update.close()
                 
-                # Feedback visuel et rechargement de la page pour appliquer l'effet
-                st.success("Nom mis à jour !")
+                # Feedback visuel avec notification Toast
+                st.toast("Nom mis à jour avec succès !", icon="✅")
                 time.sleep(0.5) 
                 st.rerun() 
                 
@@ -381,6 +347,9 @@ def display_dashboard(raw_data):
     except:
         total_budget_Gy = 0.0
 
+    # On récupère le seuil global pour l'appliquer ici
+    seuil_patient = st.session_state.get("seuil_global_val", 1.5)
+
     for index, item in enumerate(raw_data):
         error_session_pct = item['Session Error (%)']
         dose_nominal = item['Dose (Gy)']
@@ -418,7 +387,7 @@ def display_dashboard(raw_data):
             # Système d'alertes visuelles
             comments = []
             alert = False
-            if error_session_pct > 1.5: comments.append("Erreur > 1.5%"); alert = True
+            if error_session_pct > seuil_patient: comments.append(f"Erreur > {seuil_patient}%"); alert = True
             if total_cumulated_dose >= total_budget_Gy: comments.append("BUDGET DÉPASSÉ"); alert = True
             comment = " | ".join(comments) if comments else "OK"
         
@@ -543,7 +512,7 @@ def display_dashboard(raw_data):
                             else:
                                 gain = max_sessions - theoretical_remaining_sessions
                                 alert_loss = f" <i>(soit un décalage de <b>+{gain} séance(s)</b>)</i>"
-                            
+                        
                         html_text = f"""
                         <div style="background-color: {bg_color}; padding: 16px; border-radius: 8px; color: {text_color}; margin-top: 10px;">
                             <b>Si le patient continue sur {machine_chosen} :</b><br><br>
@@ -586,7 +555,7 @@ def display_dashboard(raw_data):
             session_to_analyze = transfer_sessions[chosen_index]
 
             if session_to_analyze['Session Error (%)'] > 0.0:
-                total_errors = np.array(session_to_analyze['Profile_Error']) # Tableau complet des erreurs
+                total_errors = np.array(session_to_analyze['Profile_Error']) # Tableau complet des erreurs en ms
                 
                 CS = session_to_analyze.get('CS', 0) 
                 GP = session_to_analyze.get('GP', 0) 
@@ -657,85 +626,97 @@ def display_dashboard(raw_data):
                 st.caption(caption_text)
             else:
                 st.info("No error detected in the selected session.")
+#===========================================================================================================
 
-#======= BARRE LATÉRALE (Menu Ingestion) ===================================================================
+#======= AUTOMATISATION DE L'INGESTION (Sans bouton) =======================================================
 st.sidebar.image("logo.png", use_container_width=True)
 st.sidebar.markdown("---")
-st.sidebar.markdown("**Service de Physique Médicale**")
+st.sidebar.markdown("**Département de Physique Médicale**")
 st.sidebar.markdown("---")
-st.sidebar.markdown("###  Ingestion des plans")
-st.sidebar.markdown(f"<small>Traitez les fichiers DICOM déposés dans le dossier **Transfert_tomo** pour les intégrer à la base.</small>", unsafe_allow_html=True)
 
-files_in = read_files_in_directory(DIR_IN) # Liste tous les DICOM en attente
+# ======= BOUTON PROCÉDURE (Téléchargement) =======
+doc_path = os.path.join(os.path.dirname(__file__), "Procédure2.docx")
+try:
+    with open(doc_path, "rb") as file:
+        st.sidebar.download_button(
+            label=" Télécharger la Procédure",
+            data=file,
+            file_name="Procédure_Tomo_Transfer.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            use_container_width=True
+        )
+except FileNotFoundError:
+    st.sidebar.warning(" Fichier de procédure introuvable sur le réseau.")
+# =================================================
 
-# Bouton principal pour lancer l'ingestion
-if st.sidebar.button("Traiter les nouveaux plans", use_container_width=True, type="primary"):
-    if len(files_in) == 0:
-        st.sidebar.warning(f"Aucun nouveau fichier trouvé.")
-    else:
-        with st.sidebar.status("Analyse en cours...", expanded=True) as status:
-            conn = sqlite3.connect(DB_NAME)
-            cursor = conn.cursor()
-            
-            duplicates_ignored = 0
-            new_processed = 0
+files_in = read_files_in_directory(DIR_IN)
 
-            # Boucle sur chaque fichier trouvé
-            for f in files_in:
+# Si des fichiers sont présents, le traitement se lance tout seul !
+if len(files_in) > 0:
+    with st.sidebar.status(f"Intégration automatique de {len(files_in)} nouveau(x) plan(s)...", expanded=True) as status:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        
+        duplicates_ignored = 0
+        new_processed = 0
+
+        # Boucle sur chaque fichier trouvé
+        for f in files_in:
+            try:
+                # OPTIMISATION : Lecture unique du DICOM pour soulager le NAS
+                plan = dcm.dcmread(f) 
                 try:
-                    ds = dcm.dcmread(f, stop_before_pixels=True) # Lecture rapide pour vérifier l'UID
-                    try:
-                        uid = ds.SOPInstanceUID
-                    except AttributeError:
-                        continue # Ignore si le fichier n'a pas d'UID
-                    
-                    try:
-                        # Lecture complète et appel de toutes nos fonctions
-                        plan = dcm.dcmread(f)
-                        info = general_info(plan)
-                        delivery = delivery_info(plan)
-                        sinogram = get_sinogram(plan)
-                        data = get_error_shift(sinogram, delivery) # data[0] = erreur transfert, data[1] = uLCT, data[2] = JSON
-                        
-                        # Formatage du nom "Nom^Prenom"
-                        parts = info["patient_name"].split("^")  
-                        full_name = f"{parts[1] if len(parts) > 1 else ''} {parts[0]}".strip()
-                        
-                        # Extraction de la date DICOM
-                        try: plan_date = str(plan[0x0008, 0x0012].value) 
-                        except KeyError: plan_date = "00000000" 
-                        try: plan_time = str(plan[0x0008, 0x0013].value) 
-                        except KeyError: plan_time = "000000"
-                        
-                        # Formate la date pour tri SQL et pour affichage humain
-                        date_time_sort = f"{plan_date}{plan_time}"
-                        display_date = f"{plan_date[6:8]}/{plan_date[4:6]}/{plan_date[0:4]} à {plan_time[0:2]}:{plan_time[2:4]}:{plan_time[4:6]}"
-                        
-                        # 1. Ajoute le patient dans la base (ignore s'il existe déjà)
-                        cursor.execute("INSERT OR IGNORE INTO PATIENTS (Patient_ID, Full_Name) VALUES (?, ?)", 
-                                       (info["patient_id"], full_name))
-                                       
-                        profile_json = json.dumps(data[2].tolist())
-                        
-                        # 2. Ajoute la session/transfert
-                        cursor.execute("""
-                            INSERT INTO SESSIONS (
-                                Patient_ID, DICOM_SOP_UID, Date_Time, Display_Date, Machine, Treatment_Site, Raw_Treatment_Site, 
-                                Dose_Gy, Nb_Frac, uLCT, Error_pct, Profile_JSON, CS_mm_s, GP_s
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """, (info["patient_id"], uid, date_time_sort, display_date, info["machine_nb"], 
-                              info["treatment_site"], info["raw_site"],
-                              delivery["DS"], delivery.get("Nb_Frac", 1), data[1], data[0], profile_json,
-                              delivery["CS"], delivery["GP"]))
-                        
-                        new_processed += 1
-                        
-                    except sqlite3.IntegrityError:
-                        duplicates_ignored += 1 # L'UID existait déjà, on évite le doublon
-                        
-                except Exception as e:
-                    st.sidebar.error(f"Erreur sur {os.path.basename(f)} : {e}")
+                    uid = plan.SOPInstanceUID
+                except AttributeError:
+                    continue # Ignore si le fichier n'a pas d'UID
                 
+                try:
+                    # Appel de toutes nos fonctions d'extraction
+                    info = general_info(plan)
+                    delivery = delivery_info(plan)
+                    sinogram = get_sinogram(plan)
+                    data = get_error_shift(sinogram, delivery) # data[0] = erreur transfert, data[1] = uLCT, data[2] = JSON
+                    
+                    # Formatage du nom "Nom^Prenom"
+                    parts = info["patient_name"].split("^")  
+                    full_name = f"{parts[1] if len(parts) > 1 else ''} {parts[0]}".strip()
+                    
+                    # Extraction de la date DICOM
+                    try: plan_date = str(plan[0x0008, 0x0012].value) 
+                    except KeyError: plan_date = "00000000" 
+                    try: plan_time = str(plan[0x0008, 0x0013].value) 
+                    except KeyError: plan_time = "000000"
+                    
+                    # Formate la date pour tri SQL et pour affichage humain
+                    date_time_sort = f"{plan_date}{plan_time}"
+                    display_date = f"{plan_date[6:8]}/{plan_date[4:6]}/{plan_date[0:4]} à {plan_time[0:2]}:{plan_time[2:4]}:{plan_time[4:6]}"
+                    
+                    # 1. Ajoute le patient dans la base (ignore s'il existe déjà)
+                    cursor.execute("INSERT OR IGNORE INTO PATIENTS (Patient_ID, Full_Name) VALUES (?, ?)", 
+                                   (info["patient_id"], full_name))
+                                   
+                    profile_json = json.dumps(data[2].tolist())
+                    
+                    # 2. Ajoute la session/transfert
+                    cursor.execute("""
+                        INSERT INTO SESSIONS (
+                            Patient_ID, DICOM_SOP_UID, Date_Time, Display_Date, Machine, Treatment_Site, Raw_Treatment_Site, 
+                            Dose_Gy, Nb_Frac, uLCT, Error_pct, Profile_JSON, CS_mm_s, GP_s
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (info["patient_id"], uid, date_time_sort, display_date, info["machine_nb"], 
+                          info["treatment_site"], info["raw_site"],
+                          delivery["DS"], delivery.get("Nb_Frac", 1), data[1], data[0], profile_json,
+                          delivery["CS"], delivery["GP"]))
+                    
+                    new_processed += 1
+                    
+                except sqlite3.IntegrityError:
+                    duplicates_ignored += 1 # L'UID existait déjà, on évite le doublon
+                    
+            except Exception as e:
+                st.sidebar.error(f"Erreur sur {os.path.basename(f)} : {e}")
+            
+            finally:
                 # Archivage : Déplace le fichier traité pour vider le dossier de dépôt
                 file_name = os.path.basename(f)
                 dest_path = os.path.join(DIR_ARCHIVE, file_name)
@@ -747,122 +728,184 @@ if st.sidebar.button("Traiter les nouveaux plans", use_container_width=True, typ
                 parent_dir = os.path.dirname(f)
                 if parent_dir != DIR_IN and not os.listdir(parent_dir):
                     os.rmdir(parent_dir)
-            
-            conn.commit()
-            conn.close()
-            status.update(label="Traitement terminé !", state="complete", expanded=False)
+        
+        conn.commit()
+        conn.close()
+        status.update(label="Traitement terminé !", state="complete", expanded=False)
 
-        if new_processed > 0:
-            st.sidebar.success(f"**{new_processed}** nouveau(x) plan(s) ajouté(s).")
-        else:
-            st.sidebar.info(f"Aucun ajout. **{duplicates_ignored}** doublon(s) archivé(s).")
+    if new_processed > 0:
+        # --- VIDAGE DU CACHE POUR METTRE À JOUR LES STATS ---
+        charger_donnees_globales.clear()
+        st.toast(f"{new_processed} plan(s) traité(s) avec succès !", icon="✅")
+        time.sleep(1)
+        st.rerun() # Relance l'application pour afficher les nouvelles données
+else:
+    st.sidebar.success(" Base de données à jour. En attente de nouveaux DICOM...")
 #===========================================================================================================
 
 
-#======= MAIN SCREEN (Clinical Analysis) ===================================================================
+#======= GESTION DE LA NAVIGATION ==========================================================================
 st.markdown("<h1 style='text-align: center;'>Suivi de transfert TomoTherapy</h1>", unsafe_allow_html=True) 
 
-# --- Création des deux onglets principaux (Dossier clinique vs Dashboard Qualité) ---
-tab_patient, tab_stats = st.tabs([" Dossier Patient", " Statistiques Globales"])
+# Initialisation de la mémoire de l'application
+if "vue_actuelle" not in st.session_state:
+    st.session_state.vue_actuelle = "Accueil" # Page par défaut
+if "patient_cible" not in st.session_state:
+    st.session_state.patient_cible = None
 
 # ==========================================================================================================
-# ONGLET 1 : DOSSIER PATIENT 
+# PAGE 1 : VUE GLOBALE (Accueil & Statistiques)
 # ==========================================================================================================
-with tab_patient:
-    st.markdown("### Rechercher l'historique d'un patient")
-
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("SELECT Patient_ID, Full_Name FROM PATIENTS")
-    patients_db = cursor.fetchall()
-
-    if len(patients_db) == 0:
-        st.info(f"La base de données est vide. Déposez des fichiers dans le dossier **{DIR_IN}** et cliquez sur le bouton à gauche.")
-    else:
-        # Formate la liste pour le menu déroulant "NOM (ID)"
-        list_choices = sorted([f"{p[1]} (ID: {p[0]})" for p in patients_db])
-
-        new_icon_url = "https://img.icons8.com/?size=25&id=7eX13e1GI7bn&format=png&color=000000"
-        st.markdown(f' <img src="{new_icon_url}" style="height: 20px; vertical-align: middle;"> Rechercher par Nom, Prénom ou ID :', unsafe_allow_html=True)
-        search = st.text_input("", placeholder="Ex: Dupont, Jean, ou 12345...")
-
-        # Filtre interactif via la barre de recherche textuelle
-        if search:
-            list_choices = [p for p in list_choices if search.lower() in p.lower()] 
-                    
-        if len(list_choices) == 0: 
-            st.warning("Aucun patient ne correspond à cette recherche.")
-        else:
-            patient_selected = st.selectbox("Sélectionnez un patient :", ["-- Choisir un patient --"] + list_choices) 
-            
-            # Dès qu'un patient est cliqué, lance la requête pour charger son historique
-            if patient_selected != "-- Choisir un patient --":
-                id_target = patient_selected.split("ID: ")[1].replace(")", "")
-                
-                with st.spinner("Récupération rapide depuis la base SQL..."): 
-                    cursor.execute("""
-                        SELECT s.Display_Date, s.Machine, s.Dose_Gy, s.Nb_Frac, s.uLCT, s.Error_pct, s.Profile_JSON, s.Date_Time, p.Full_Name, s.CS_mm_s, s.GP_s, s.Treatment_Site, s.Raw_Treatment_Site 
-                        FROM SESSIONS s
-                        JOIN PATIENTS p ON s.Patient_ID = p.Patient_ID
-                        WHERE s.Patient_ID = ? 
-                        ORDER BY s.Date_Time ASC
-                    """, (id_target,))
-                    
-                    session_lines = cursor.fetchall()
-                    
-                    # Convertit le retour SQL brut en un dictionnaire facilement lisible par le dashboard
-                    raw_data_sql = []
-                    for row in session_lines:
-                        raw_data_sql.append({
-                            'Date': row[0], 'Machine': row[1], 'Dose (Gy)': row[2], 'Nb_Frac': row[3],
-                            'uLCT (%)': row[4], 'Session Error (%)': row[5], 'Profile_Error': json.loads(row[6]),
-                            'sort_key': row[7], 'Patient': row[8], 'ID': id_target,
-                            'CS': row[9], 'GP': row[10],
-                            'Site': row[11],
-                            'Raw_Site': row[12]
-                        })
-                        
-                    # Appelle l'interface graphique (Tableaux, Jauges)
-                    display_dashboard(raw_data_sql)
-
-
-# ==========================================================================================================
-# ONGLET 2 : STATISTIQUES GLOBALES (Contrôle Qualité du Service)
-# ==========================================================================================================
-with tab_stats:
-    st.markdown("###  Analyse Statistique du Service")
-
-    # --- NOUVEAUTÉ : Curseur pour choisir le seuil dynamique ---
-    seuil_alerte = st.number_input(" Définir le seuil d'alerte clinique (%) :", min_value=0.0, max_value=10.0, value=1.5, step=0.1)
+if st.session_state.vue_actuelle == "Accueil":
+    
+    st.markdown("###  Contrôle Qualité Global du Service")
+    
+    # --- Curseur pour choisir le seuil dynamique ---
+    seuil_alerte = st.number_input(
+        "Définir le seuil d'alerte clinique par transfert (%) :", 
+        min_value=0.0, max_value=10.0, value=1.5, step=0.1, key="seuil_global",
+        help="Seuil de tolérance pour une séance individuelle. Définit le pourcentage d'erreur au-delà duquel la déviation mécanique lors d'un changement de machine est jugée critique."
+    )
+    # Sauvegarde la valeur dans le session_state pour qu'elle soit récupérable dans l'onglet Dossier
+    st.session_state["seuil_global_val"] = seuil_alerte
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # 1. Connexion et extraction globale (Aspire toute la table)
-    conn_stats = sqlite3.connect(DB_NAME)
-    df_stats = pd.read_sql_query("SELECT Patient_ID, Date_Time, Machine, Treatment_Site, Raw_Treatment_Site, Error_pct, GP_s, CS_mm_s FROM SESSIONS", conn_stats)
-    conn_stats.close()
+    # 1. Extraction globale via le Cache (Instantané)
+    df_stats = charger_donnees_globales()
 
     if len(df_stats) == 0:
         st.info("Aucune donnée disponible pour le moment. Ingérez des fichiers DICOM pour générer les statistiques.")
     else:
-        # Trie par Patient et par Date pour que les calculs de chronologie (shift, cumcount) fonctionnent bien
+        # Trie par Patient et par Date pour que les calculs de chronologie fonctionnent bien
         df_stats = df_stats.sort_values(by=['Patient_ID', 'Date_Time'])
         
-        # --- CRÉATION DES SOUS-ONGLETS ---
-        sub_tab_loc, sub_tab_mach, sub_tab_time, sub_tab_complex, sub_tab_dernier = st.tabs([
+        # --- PREPARATION DU TABLEAU RECAPITULATIF GLOBAL ---
+        conn_all = sqlite3.connect(DB_NAME)
+        cursor_all = conn_all.cursor()
+        cursor_all.execute("""
+            SELECT s.Patient_ID, p.Full_Name, s.Machine, s.Dose_Gy, s.Nb_Frac, s.Error_pct, s.Treatment_Site, s.Display_Date, s.Date_Time
+            FROM SESSIONS s
+            JOIN PATIENTS p ON s.Patient_ID = p.Patient_ID
+            ORDER BY s.Date_Time ASC
+        """)
+        toutes_sessions = cursor_all.fetchall()
+        conn_all.close()
+
+        if len(toutes_sessions) > 0:
+            # Regroupe l'historique par ID Patient
+            patients_dict = {}
+            for row in toutes_sessions:
+                pid = row[0]
+                if pid not in patients_dict:
+                    patients_dict[pid] = []
+                patients_dict[pid].append(row)
+            
+            tableau_final = []
+            
+            # Analyse du dernier statut pour chaque patient
+            for pid, sessions in patients_dict.items():
+                plan_initial = sessions[0]
+                plan_actuel = sessions[-1] # On regarde uniquement le dernier état connu
+                
+                nom_patient = plan_actuel[1]
+                machine_actuelle = plan_actuel[2]
+                dose_actuelle = plan_actuel[3]
+                frac_restantes = plan_actuel[4]
+                erreur_actuelle = plan_actuel[5]
+                site = plan_actuel[6]
+                date_display = plan_actuel[7]
+                date_sort = plan_actuel[8] # Utilisé uniquement pour le tri caché
+                
+                if len(sessions) > 1: # Si le patient a subi au moins un transfert
+                    # Calcul du budget initial autorisé
+                    dose_init = plan_initial[3]
+                    frac_init = plan_initial[4]
+                    budget_theorique = (dose_init * frac_init) + 0.5
+                    
+                    # Test des conditions d'alerte
+                    alerte_erreur = erreur_actuelle > seuil_alerte
+                    dose_reelle_seance = dose_actuelle * (1 + (erreur_actuelle / 100.0))
+                    alerte_seances = (dose_reelle_seance * frac_restantes) > budget_theorique
+                    
+                    # Définition du texte d'alerte spécifique
+                    if alerte_erreur and alerte_seances:
+                        statut = "🔴 % Trop haut & Dépassement seuil suspecté"
+                    elif alerte_erreur:
+                        statut = "🔴 % Trop haut"
+                    elif alerte_seances:
+                        statut = "🔴 Dépassement seuil suspecté"
+                    else:
+                        statut = "🟢 Conforme"
+                    
+                    erreur_str = f"{erreur_actuelle:.2f} %"
+                else: # S'il n'a fait que son plan initial
+                    statut = "⚪ Plan Initial"
+                    erreur_str = "-"
+                
+                # Ajoute la ligne au tableau
+                tableau_final.append({
+                    "Date_Sort": date_sort, 
+                    "Date (Dernier import)": date_display,
+                    "ID Patient": pid,
+                    "Nom": nom_patient,
+                    "Localisation": site,
+                    "Machine Destination": machine_actuelle,
+                    "Erreur Transfert": erreur_str,
+                    "Statut": statut
+                })
+            
+            # Création du DataFrame et tri chronologique (les plus récents en haut)
+            df_recap = pd.DataFrame(tableau_final)
+            df_recap = df_recap.sort_values(by="Date_Sort", ascending=False).drop(columns=["Date_Sort"])
+            
+            # Fonction pour appliquer le code couleur de manière ciblée
+            def colorer_statut(row):
+                return [
+                    'color: #c62828; font-weight: bold' if col == 'Statut' and "🔴" in row['Statut'] 
+                    else 'color: #9e9e9e; font-style: italic' if "⚪" in row['Statut'] 
+                    else '' 
+                    for col in row.index
+                ]
+            
+            st.markdown(" **Cliquez directement sur la ligne d'un patient pour ouvrir son dossier clinique complet.**")
+            
+            st.info(" **Navigation :** Cochez la petite case située tout à gauche de la ligne d'un patient pour ouvrir son dossier détaillé.")
+            event = st.dataframe(
+                df_recap.style.apply(colorer_statut, axis=1),
+                use_container_width=True,
+                hide_index=True,
+                height=400,
+                on_select="rerun",           # Recharge le script quand on clique
+                selection_mode="single-row"  # On ne peut cliquer que sur un patient à la fois
+            )
+            
+            # Détection du clic
+            if len(event.selection.rows) > 0:
+                index_clique = event.selection.rows[0]
+                # Récupère l'ID du patient correspondant à la ligne cliquée
+                patient_id_clique = df_recap.iloc[index_clique]["ID Patient"]
+                
+                # Mise à jour de la mémoire et changement de page
+                st.session_state.patient_cible = patient_id_clique
+                st.session_state.vue_actuelle = "Dossier"
+                st.rerun() # Déclenche la bascule immédiate vers la page Dossier
+        
+        st.markdown("<br><hr>", unsafe_allow_html=True)
+        st.markdown("### Statistiques Globales")
+        
+        # --- CRÉATION DES SOUS-ONGLETS DE STATISTIQUES ---
+        sub_tab_loc, sub_tab_mach, sub_tab_time, sub_tab_complex = st.tabs([
             " Par Localisation", 
             " Par Sens de Transfert", 
             " Évolution dans le Temps",
-            " Complexité vs Erreur",
-            " Tous les patients"
+            " Complexité vs Erreur"
         ])
 
-       
         # --------------------------------------------------------------------------------------------------
         # SOUS-ONGLET A : Localisation 
         # --------------------------------------------------------------------------------------------------
         with sub_tab_loc:
             st.markdown("<small style='color: #6c757d;'>Erreur moyenne des transferts par zone traitée (Plans initiaux exclus).</small><br>", unsafe_allow_html=True)
-            
             
             df_loc = df_stats.dropna(subset=['Treatment_Site']).copy()
             df_loc['session_num'] = df_loc.groupby('Patient_ID').cumcount() 
@@ -871,7 +914,6 @@ with tab_stats:
             if len(df_transfers_loc) == 0:
                 st.warning("Il n'y a pas encore eu de transfert de machine enregistré dans la base.")
             else:
-                # CORRECTION : On groupe d'abord, on trie ensuite
                 df_mean_loc = df_transfers_loc.groupby('Treatment_Site')['Error_pct'].mean().reset_index()
                 df_mean_loc = df_mean_loc.sort_values(by='Error_pct', ascending=False)
 
@@ -922,7 +964,6 @@ with tab_stats:
                     titre_pie = f"Répartition : {trajet_choisi}"
             #=================================================================================================
 
-                
                 #=====================Calcul des KPI sur la donnée filtrée=============================
                 total_focus = len(df_focus)
                 depassements_focus = df_focus['Depasse_Seuil'].sum()
@@ -939,7 +980,6 @@ with tab_stats:
 
                 #====== appel des graphiques erreur moyenne et reparttion globale ==========================
                 col_chart1, col_chart2 = st.columns([2, 1])
-                
                 
                 df_traj_stats = df_transitions.groupby('Trajet').agg(
                     Error_mean=('Error_pct', 'mean'),
@@ -997,7 +1037,6 @@ with tab_stats:
         with sub_tab_time:
             st.markdown("<small style='color: #6c757d;'>Suivi temporel de l'erreur moyenne pour détecter la fatigue des machines (maintenance prédictive). <b>Les plans initiaux sont exclus.</b></small><br><br>", unsafe_allow_html=True)
             
-
             df_time = df_stats.copy()
 
             # --- EXCLUSION DES PLANS INITIAUX ---
@@ -1034,7 +1073,7 @@ with tab_stats:
                 df_trend = df_time.groupby(['Periode', 'Machine'])['Error_pct'].mean().reset_index()
                 
                 # === Ajout des KPIs de dérive ============================
-                st.markdown("#### Dynamique de l'erreur (Dernière période vs Précédente)")
+                st.markdown("#### Evolution de l'erreur (Dernière période vs Précédente)")
                 
                 # Trie les machines par ordre alphabétique pour figer l'affichage (ex: Radi7, Tomo2, Tomo4)
                 machines_presentes = sorted(df_trend['Machine'].unique())
@@ -1065,7 +1104,7 @@ with tab_stats:
                                 delta="Donnée unique",
                                 delta_color="off"
                             )
-                    st.markdown("<br>", unsafe_allow_html=True)
+                st.markdown("<br>", unsafe_allow_html=True)
                 # ==============================================================================
 
                 # Trace le graphique en ligne
@@ -1080,68 +1119,58 @@ with tab_stats:
                 )
                 
                 fig_time.update_layout(plot_bgcolor='rgba(0,0,0,0)', margin=dict(t=40, b=0, l=0, r=0))
-                
-                # Récupère le seuil dynamique de l'onglet précédent (si défini, sinon 1.5 par défaut)
-                try:
-                    current_seuil = seuil_alerte
-                except NameError:
-                    current_seuil = 1.5
-                    
-                fig_time.add_hline(y=current_seuil, line_dash="dash", line_color="red", annotation_text=f"Seuil d'alerte ({current_seuil}%)")
+                fig_time.add_hline(y=seuil_alerte, line_dash="dash", line_color="red", annotation_text=f"Seuil d'alerte ({seuil_alerte}%)")
                 
                 st.plotly_chart(fig_time, use_container_width=True)
+
         # --------------------------------------------------------------------------------------------------
         # SOUS-ONGLET D : Complexité vs Erreur (Analyse Physique)
         # --------------------------------------------------------------------------------------------------
         with sub_tab_complex:
             st.markdown("<small style='color: #6c757d;'>Corrélation entre les paramètres cinématiques du plan (Vitesse de rotation, Vitesse de table) et les erreurs de transfert. <b>Les plans initiaux sont exclus.</b></small><br><br>", unsafe_allow_html=True)
-            
+                    
             # Choix interactif pour l'utilisateur
             param_choice = st.radio("Sélectionnez le paramètre physique en abscisse (X) :", options=["Gantry Period (Temps de rotation en s)", "Couch Speed (Vitesse de table en mm/s)"], horizontal=True)
-            
+                    
             # Adapte la colonne de la base de données en fonction du choix
             x_col = 'GP_s' if 'Gantry' in param_choice else 'CS_mm_s'
             x_label = 'Gantry Period (s)' if 'Gantry' in param_choice else 'Couch Speed (mm/s)'
-            
+                    
             # Nettoie les données (enlève les plans où le paramètre n'a pas été lu correctement)
             df_complex = df_stats.dropna(subset=[x_col, 'Error_pct']).copy()
-            
+                    
             # --- CORRECTION : EXCLUSION DES PLANS INITIAUX ---
-            # On recrée le compteur chronologique pour chaque patient
             df_complex['session_num'] = df_complex.groupby('Patient_ID').cumcount()
-            # On ne garde que les transferts (les séances strictement supérieures à 0)
             df_complex = df_complex[df_complex['session_num'] > 0]
             # -------------------------------------------------
-            
+                    
             # Sécurité supplémentaire pour éviter les valeurs aberrantes à 0 ou négatives
             df_complex = df_complex[df_complex[x_col] > 0]
-            
+                    
             if len(df_complex) == 0:
                 st.warning("Aucun transfert avec des données physiques valides n'est disponible pour générer le graphique.")
             else:
-                # Création du nuage de points avec Plotly
-                fig_complex = px.scatter(
+                # === ÉTAPE CRUCIALE : Tri des valeurs par l'axe X pour lier les points proprement de gauche à droite ===
+                df_complex = df_complex.sort_values(by=x_col)
+                
+                # Création du graphique en ligne avec marqueurs (remplace px.scatter)
+                fig_complex = px.line(
                     df_complex,
                     x=x_col,
                     y='Error_pct',
-                    color='Machine',            # Différencie les machines par la couleur des points
-                    symbol='Treatment_Site',    # Change la forme du point selon la localisation
-                    hover_data=['Patient_ID', 'Raw_Treatment_Site'], # Infos supplémentaires quand on passe la souris
-                    title=f"Nuage de points : Impact du {x_label} sur l'Erreur (Hors plans initiaux)",
-                    labels={x_col: x_label, 'Error_pct': 'Erreur Moyenne (%)', 'Treatment_Site': 'Localisation'},
-                    opacity=0.75,               # Rend les points légèrement transparents s'ils se chevauchent
-                    size_max=10,
-                    trendline="ols",            # === NOUVEAUTÉ : Ligne de tendance de régression linéaire ===
-                    trendline_scope="overall"   # === NOUVEAUTÉ : Une seule ligne globale pour tout le nuage ===
+                    color='Machine',            # Uniquement trié et coloré par machine
+                    markers=True,               # Affiche les points ET les relie par une ligne
+                    hover_data=['Patient_ID', 'Raw_Treatment_Site'], 
+                    title=f"Évolution de l'Erreur en fonction du {x_label} par Machine",
+                    labels={x_col: x_label, 'Error_pct': 'Erreur Moyenne (%)', 'Machine': 'Machine Tomo'},
                 )
-                
+                        
                 # Mise en page
                 fig_complex.update_layout(plot_bgcolor='rgba(0,0,0,0)', margin=dict(t=40, b=50, l=0, r=0))
-                fig_complex.add_hline(y=1.5, line_dash="dash", line_color="red", annotation_text="Seuil d'alerte (1.5%)")
-                
+                fig_complex.add_hline(y=seuil_alerte, line_dash="dash", line_color="red", annotation_text=f"Seuil d'alerte ({seuil_alerte}%)")
+                        
                 # === Indicateurs de vitesse sous l'axe X ===
                 if x_col == 'GP_s':
-                    # Gantry Period : Temps court = Rapide, Temps long = Lent
                     fig_complex.add_annotation(
                         text="← Rotation rapide", xref="paper", yref="paper",
                         x=0, y=-0.15, showarrow=False,
@@ -1153,7 +1182,6 @@ with tab_stats:
                         font=dict(size=12, color="#7f8c8d", style="italic")
                     )
                 elif x_col == 'CS_mm_s':
-                    # Couch Speed : Petite vitesse = Lent, Grande vitesse = Rapide
                     fig_complex.add_annotation(
                         text="← Table lente", xref="paper", yref="paper",
                         x=0, y=-0.15, showarrow=False,
@@ -1164,111 +1192,45 @@ with tab_stats:
                         x=1, y=-0.15, showarrow=False,
                         font=dict(size=12, color="#7f8c8d", style="italic")
                     )
-                # =================================================================
 
                 st.plotly_chart(fig_complex, use_container_width=True)
-        # --------------------------------------------------------------------------------------------------
-        # SOUS-ONGLET E : Tous les Patients (Contrôle Rapide)
-        # --------------------------------------------------------------------------------------------------
-        with sub_tab_dernier:
-            st.markdown("###  Contrôle Qualité Global du Service")
-            st.markdown("<small style='color: #6c757d;'>Ce tableau récapitule l'état actuel de tous les patients. Il s'allume automatiquement en rouge si le dernier transfert connu dépasse le seuil de tolérance clinique ou génère un risque de dépassement de dose.</small><br><br>", unsafe_allow_html=True)
+
+# ==========================================================================================================
+# PAGE 2 : DOSSIER PATIENT 
+# ==========================================================================================================
+elif st.session_state.vue_actuelle == "Dossier":
+    
+    # Bouton pour revenir à la vue globale
+    if st.button("⬅️ Retour au tableau de bord général"):
+        st.session_state.vue_actuelle = "Accueil"
+        st.session_state.patient_cible = None
+        st.rerun()
+
+    st.markdown("---")
+    
+    id_target = st.session_state.patient_cible
+    
+    with st.spinner("Récupération du dossier..."): 
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT s.Display_Date, s.Machine, s.Dose_Gy, s.Nb_Frac, s.uLCT, s.Error_pct, s.Profile_JSON, s.Date_Time, p.Full_Name, s.CS_mm_s, s.GP_s, s.Treatment_Site, s.Raw_Treatment_Site 
+            FROM SESSIONS s
+            JOIN PATIENTS p ON s.Patient_ID = p.Patient_ID
+            WHERE s.Patient_ID = ? 
+            ORDER BY s.Date_Time ASC
+        """, (id_target,))
+        
+        session_lines = cursor.fetchall()
+        conn.close()
+        
+        raw_data_sql = []
+        for row in session_lines:
+            raw_data_sql.append({
+                'Date': row[0], 'Machine': row[1], 'Dose (Gy)': row[2], 'Nb_Frac': row[3],
+                'uLCT (%)': row[4], 'Session Error (%)': row[5], 'Profile_Error': json.loads(row[6]),
+                'sort_key': row[7], 'Patient': row[8], 'ID': id_target,
+                'CS': row[9], 'GP': row[10], 'Site': row[11], 'Raw_Site': row[12]
+            })
             
-            # Connexion pour récupérer tout l'historique avec les noms des patients
-            conn_all = sqlite3.connect(DB_NAME)
-            cursor_all = conn_all.cursor()
-            cursor_all.execute("""
-                SELECT s.Patient_ID, p.Full_Name, s.Machine, s.Dose_Gy, s.Nb_Frac, s.Error_pct, s.Treatment_Site, s.Display_Date, s.Date_Time
-                FROM SESSIONS s
-                JOIN PATIENTS p ON s.Patient_ID = p.Patient_ID
-                ORDER BY s.Date_Time ASC
-            """)
-            toutes_sessions = cursor_all.fetchall()
-            conn_all.close()
-
-            if len(toutes_sessions) == 0:
-                st.info("La base de données est vide.")
-            else:
-                # Regroupe l'historique par ID Patient
-                patients_dict = {}
-                for row in toutes_sessions:
-                    pid = row[0]
-                    if pid not in patients_dict:
-                        patients_dict[pid] = []
-                    patients_dict[pid].append(row)
-                
-                tableau_final = []
-                
-                # Analyse du dernier statut pour chaque patient
-                for pid, sessions in patients_dict.items():
-                    plan_initial = sessions[0]
-                    plan_actuel = sessions[-1] # On regarde uniquement le dernier état connu
-                    
-                    nom_patient = plan_actuel[1]
-                    machine_actuelle = plan_actuel[2]
-                    dose_actuelle = plan_actuel[3]
-                    frac_restantes = plan_actuel[4]
-                    erreur_actuelle = plan_actuel[5]
-                    site = plan_actuel[6]
-                    date_display = plan_actuel[7]
-                    date_sort = plan_actuel[8] # Utilisé uniquement pour le tri caché
-                    
-                    if len(sessions) > 1: # Si le patient a subi au moins un transfert
-                        # Calcul du budget initial autorisé
-                        dose_init = plan_initial[3]
-                        frac_init = plan_initial[4]
-                        budget_theorique = (dose_init * frac_init) + 0.5
-                        
-                        # Test des conditions d'alerte
-                        alerte_erreur = erreur_actuelle > seuil_alerte
-                        dose_reelle_seance = dose_actuelle * (1 + (erreur_actuelle / 100.0))
-                        alerte_seances = (dose_reelle_seance * frac_restantes) > budget_theorique
-                        
-                        # Définition du texte d'alerte spécifique
-                        if alerte_erreur and alerte_seances:
-                            statut = "🔴 % Trop haut & Problème séances"
-                        elif alerte_erreur:
-                            statut = "🔴 % Trop haut"
-                        elif alerte_seances:
-                            statut = "🔴 Problème séances"
-                        else:
-                            statut = "🟢 Conforme"
-                        
-                        erreur_str = f"{erreur_actuelle:.2f} %"
-                    else: # S'il n'a fait que son plan initial
-                        statut = "⚪ Plan Initial"
-                        erreur_str = "-"
-                    
-                    # Ajoute la ligne au tableau
-                    tableau_final.append({
-                        "Date_Sort": date_sort, 
-                        "Date (Dernier import)": date_display,
-                        "ID Patient": pid,
-                        "Nom": nom_patient,
-                        "Localisation": site,
-                        "Machine Actuelle": machine_actuelle,
-                        "Erreur Transfert": erreur_str,
-                        "Statut": statut
-                    })
-                
-                # Création du DataFrame et tri chronologique (les plus récents en haut)
-                df_recap = pd.DataFrame(tableau_final)
-                df_recap = df_recap.sort_values(by="Date_Sort", ascending=False).drop(columns=["Date_Sort"])
-                
-                # Fonction pour appliquer le code couleur de manière ciblée
-                def colorer_statut(row):
-                    return [
-                        'color: #c62828; font-weight: bold' if col == 'Statut' and "🔴" in row['Statut'] 
-                        else 'color: #9e9e9e; font-style: italic' if "⚪" in row['Statut'] 
-                        else '' 
-                        for col in row.index
-                    ]
-                
-                # Affichage du grand tableau stylisé
-                st.dataframe(
-                    df_recap.style.apply(colorer_statut, axis=1),
-                    use_container_width=True,
-                    hide_index=True,
-                    height=500
-                )
-
+        display_dashboard(raw_data_sql)
