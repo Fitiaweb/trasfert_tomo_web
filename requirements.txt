@@ -1,0 +1,7 @@
+pydicom
+numpy
+pandas
+matplotlib
+plotly
+streamlit
+fpdf2

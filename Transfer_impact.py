@@ -315,7 +315,7 @@ def display_dashboard(raw_data):
     st.markdown("<br>", unsafe_allow_html=True)
 
     # === Saisie des fractions (Validation par le clinicien) ===
-    st.markdown("#####  Validation des séances réalisées")
+    st.markdown("##### Validation des séances réalisées")
     st.markdown("<small style='color: #6c757d;'>Le DICOM ne reflétant pas toujours la réalité clinique de Mosaiq/Aria, merci de valider le nombre de séances réellement effectuées.</small>", unsafe_allow_html=True)
     
     fractions_done_list = []
@@ -337,18 +337,20 @@ def display_dashboard(raw_data):
     st.markdown("<br>", unsafe_allow_html=True)
 
     # === Construction du tableau et calcul des doses cumulées ===
+    # On récupère le seuil global en amont pour calculer le budget
+    seuil_patient = st.session_state.get("seuil_global_val", 1.5)
+    
     total_cumulated_dose = 0.0 
     final_table_data = [] 
     
-    # Calcul du budget total autorisé (Dose prescrite + 0.5 Gy de tolérance)
+    # NOUVEAU CALCUL DU BUDGET : Dose totale + % du seuil
     try:
         dose_nominal_ref = raw_data[0]['Dose (Gy)']
-        total_budget_Gy = (dose_nominal_ref * nb_frac_ref) + 0.5 
+        dose_totale_prescrite = dose_nominal_ref * nb_frac_ref
+        total_budget_Gy = dose_totale_prescrite * (1 + (seuil_patient / 100.0))
     except:
         total_budget_Gy = 0.0
-
-    # On récupère le seuil global pour l'appliquer ici
-    seuil_patient = st.session_state.get("seuil_global_val", 1.5)
+        dose_totale_prescrite = 0.0
 
     for index, item in enumerate(raw_data):
         error_session_pct = item['Session Error (%)']
@@ -363,7 +365,7 @@ def display_dashboard(raw_data):
             total_cumulated_dose += (dose_nominal * fractions_done) # Additionne la dose
             
             cumul_str = f"{total_cumulated_dose:.2f}"
-            comment = f"Prescription : {total_budget_Gy:.2f} Gy"
+            comment = f"Prescription : {dose_totale_prescrite:.2f} Gy"
             alert = False
             
             # Prépare la ligne d'historique pour le plan initial
@@ -384,11 +386,13 @@ def display_dashboard(raw_data):
                 
             cumul_str = f"{total_cumulated_dose:.2f}"
             
-            # Système d'alertes visuelles
+            # Nouveau Système d'alerte : Uniquement basé sur le % d'erreur
             comments = []
             alert = False
-            if error_session_pct > seuil_patient: comments.append(f"Erreur > {seuil_patient}%"); alert = True
-            if total_cumulated_dose >= total_budget_Gy: comments.append("BUDGET DÉPASSÉ"); alert = True
+            if error_session_pct > seuil_patient: 
+                comments.append(f"Erreur > {seuil_patient}%")
+                alert = True
+                
             comment = " | ".join(comments) if comments else "OK"
         
             # Prépare la ligne d'historique pour un transfert
@@ -445,7 +449,7 @@ def display_dashboard(raw_data):
 
     # --- Bloc de gauche : Simulation et Budget ---
     with col_graph1:
-        st.subheader("Consommation du Budget Dose") 
+        st.subheader("🎯 Suivi du Budget Dose") 
         if len(df) > 0:
             last_session_df = df.iloc[-1]
             budget_max =  last_session_df['_Budget_Total']
@@ -453,81 +457,73 @@ def display_dashboard(raw_data):
 
             percentage = min(current_dose / budget_max, 1.0) if budget_max > 0 else 0.0
             
-            st.progress(percentage) # Barre de progression de la dose
-            st.markdown(f"<h3 style='text-align: center; color: #333; margin-bottom: 0px;'>{current_dose:.2f} Gy / {budget_max:.2f} Gy</h3>", unsafe_allow_html=True)
-            st.markdown("<p style='text-align: center; font-size: 13px; color: #6c757d; margin-top: 0px;'><i>(Dose prescrite + 0.5 Gy de tolérance)</i></p>", unsafe_allow_html=True)
+            # --- Nouvel affichage du budget mis en évidence ---
+            bg_color = "#e8f5e9" if percentage < 1.0 else "#ffebee"
+            text_color = "#2e7d32" if percentage < 1.0 else "#c62828"
+            
+            html_budget = f"""
+            <div style='background-color: {bg_color}; padding: 20px; border-radius: 10px; border: 2px solid {text_color}; text-align: center; margin-bottom: 10px;'>
+                <h4 style='color: {text_color}; margin: 0; font-weight: 600;'>Dose Cumulée Estimée</h4>
+                <h1 style='color: {text_color}; margin: 5px 0; font-size: 38px;'>{current_dose:.2f} <span style='font-size: 20px; font-weight: normal;'>/ {budget_max:.2f} Gy</span></h1>
+                <p style='margin: 0; color: #555; font-size: 14px;'><i>Limite maximale tolérée : Prescription + {seuil_patient}%</i></p>
+            </div>
+            """
+            st.markdown(html_budget, unsafe_allow_html=True)
+            st.progress(percentage) 
+            # ---------------------------------------------------
             
             st.markdown("---")
-            st.markdown("#### Simulateur de fin de traitement")
+            st.markdown("#### 🔮 Prévision de fin de traitement")
 
-            if len(df) > 1: # Ne s'active que s'il y a eu au moins un transfert
-                initial_machine = df.iloc[0]['Machine']
-                unique_machines = [m for m in df['Machine'].unique().tolist() if m != initial_machine]
+            # S'il y a eu un transfert, on simule la suite automatiquement avec la dernière machine
+            if len(df) > 1:
+                last_session_machine = df.iloc[-1]
+                machine_actuelle = last_session_machine['Machine']
                 
-                if len(unique_machines) > 0:
-                    # Boutons radio pour simuler le reste du traitement
-                    machine_chosen = st.radio("Projeter la suite du traitement avec :", options=unique_machines, horizontal=True)
-                    
-                    last_session_machine = df[df['Machine'] == machine_chosen].iloc[-1]
-                    
-                    if  last_session_machine['Dose Délivrée (Gy/s.)'] == "-":
-                        simulated_dose = float(last_session_machine['Dose Prévue (Gy/s.)'])
-                    else:
-                        simulated_dose = float(last_session_machine['Dose Délivrée (Gy/s.)'])
-                    
-                    # Calcule combien de séances la machine choisie peut encore faire
-                    budget_remaining = budget_max - current_dose
-                    max_sessions = int(budget_remaining / simulated_dose) if simulated_dose > 0 and budget_remaining > 0 else 0
-                    
-                    # === TEXTE EXPLICATIF DU SIMULATEUR ===
-                    breakdown_dict = {}
-                    for idx in range(len(raw_data)):
-                        mach = raw_data[idx]['Machine']
-                        f = fractions_done_list[idx]
-                        if f > 0:
-                            breakdown_dict[mach] = breakdown_dict.get(mach, 0) + f
-                            
-                    total_done_simul = sum(fractions_done_list)
-                    
-                    if total_done_simul > 0:
-                        breakdown_str = " <i>(" + ", ".join([f"{count} avec la {m}" for m, count in breakdown_dict.items()]) + ")</i>"
-                    else:
-                        breakdown_str = ""
-                    
-                    theoretical_remaining_sessions = nb_frac_ref - total_done_simul
-                    # ==================================
-                    
-                    # Code couleur pour indiquer si l'on gagne, perd ou maintient des séances
-                    if max_sessions > 0:
-                        if max_sessions == theoretical_remaining_sessions:
-                            bg_color = "#d4edda" 
-                            text_color = "#155724"
-                            alert_loss = ""
-                        else:
-                            bg_color = "#f8d7da" 
-                            text_color = "#721c24"
-                            if max_sessions < theoretical_remaining_sessions:
-                                loss = theoretical_remaining_sessions - max_sessions
-                                alert_loss = f" <i>(soit une perte de <b>{loss} séance(s)</b>)</i>"
-                            else:
-                                gain = max_sessions - theoretical_remaining_sessions
-                                alert_loss = f" <i>(soit un décalage de <b>+{gain} séance(s)</b>)</i>"
-                        
-                        html_text = f"""
-                        <div style="background-color: {bg_color}; padding: 16px; border-radius: 8px; color: {text_color}; margin-top: 10px;">
-                            <b>Si le patient continue sur {machine_chosen} :</b><br><br>
-                            Il a déjà réalisé <b>{total_done_simul} séance(s)</b>{breakdown_str}.<br><br>
-                            Au rythme de cette machine (<b>{simulated_dose:.2f} Gy/séance</b>), il peut encore faire <b>{max_sessions} séances</b> au lieu des <b>{theoretical_remaining_sessions}</b> restantes prévues{alert_loss}.
-                        </div>
-                        """
-                        st.markdown(html_text, unsafe_allow_html=True)
-                    else:
-                        st.error(f"ALERTE CRITIQUE : Le budget total sera dépassé à la prochaine séance sur la {machine_chosen} !")
+                if last_session_machine['Dose Délivrée (Gy/s.)'] == "-":
+                    dose_par_seance_actuelle = float(last_session_machine['Dose Prévue (Gy/s.)'])
                 else:
-                    st.info("Le traitement est actuellement sur la machine initiale. Aucun transfert n'a encore été enregistré pour simuler une projection.")
+                    dose_par_seance_actuelle = float(last_session_machine['Dose Délivrée (Gy/s.)'])
+                
+                total_done_simul = sum(fractions_done_list)
+                theoretical_remaining_sessions = nb_frac_ref - total_done_simul
+                
+                # Calcule le nombre max de séances faisables avant d'exploser le budget
+                budget_remaining = budget_max - current_dose
+                max_sessions_possibles = int(budget_remaining / dose_par_seance_actuelle) if dose_par_seance_actuelle > 0 and budget_remaining > 0 else 0
+                
+                # Calcule la dose que le patient prendra s'il fait toutes les séances restantes
+                dose_finale_projetee = current_dose + (theoretical_remaining_sessions * dose_par_seance_actuelle)
+                
+                if theoretical_remaining_sessions > 0:
+                    if max_sessions_possibles == theoretical_remaining_sessions:
+                        alerte_bg = "#d4edda" 
+                        alerte_text = "#155724"
+                        alerte_message = f"✅ <b>Rythme Conforme :</b> Le patient peut faire ses <b>{theoretical_remaining_sessions} séances restantes</b> sur la {machine_actuelle} sans dépasser la limite de dose."
+                    
+                    elif max_sessions_possibles < theoretical_remaining_sessions:
+                        alerte_bg = "#f8d7da" 
+                        alerte_text = "#721c24"
+                        perte = theoretical_remaining_sessions - max_sessions_possibles
+                        alerte_message = f"⚠️ <b>ALERTE SURDOSE :</b> Au rythme de la {machine_actuelle} ({dose_par_seance_actuelle:.2f} Gy/s.), faire les {theoretical_remaining_sessions} séances prévues fera dépasser le budget total ({dose_finale_projetee:.2f} Gy).<br><br>👉 Il ne peut faire que <b>{max_sessions_possibles} séances supplémentaires maximum</b> (soit <b>-{perte} séance(s)</b> à annuler sur l'ordonnance)."
+                    
+                    else:
+                        alerte_bg = "#fff3cd" 
+                        alerte_text = "#856404"
+                        gain = max_sessions_possibles - theoretical_remaining_sessions
+                        alerte_message = f"ℹ️ <b>SOUS-DOSAGE :</b> La {machine_actuelle} délivrant moins que prévu, la limite ne sera pas atteinte à la fin du traitement. Il y a une marge pour rajouter <b>+{gain} séance(s)</b> si le médecin le juge nécessaire."
+
+                    html_alerte = f"""
+                    <div style="background-color: {alerte_bg}; padding: 16px; border-radius: 8px; color: {alerte_text}; margin-top: 10px; border: 1px solid {alerte_text};">
+                        {alerte_message}
+                    </div>
+                    """
+                    st.markdown(html_alerte, unsafe_allow_html=True)
+                else:
+                    st.success("Le traitement est théoriquement terminé (Toutes les séances ont été réalisées).")
             else:
                 dose_last = float(last_session_df['Dose Prévue (Gy/s.)'])
-                st.info(f"Plan initial : Rythme nominal de {dose_last:.2f} Gy/séance. Le patient doit faire {nb_frac_ref} séances au total.")
+                st.info(f"Le patient n'a subi aucun transfert. Il reste {nb_frac_ref - sum(fractions_done_list)} séances prévues sur la machine d'origine.")
 
     # --- Bloc de droite : Graphique Polaire de l'Erreur ---
     with col_graph2:
@@ -817,23 +813,17 @@ if st.session_state.vue_actuelle == "Accueil":
                 date_sort = plan_actuel[8] # Utilisé uniquement pour le tri caché
                 
                 if len(sessions) > 1: # Si le patient a subi au moins un transfert
-                    # Calcul du budget initial autorisé
+                    # Calcul du nouveau budget autorisé en fonction du seuil en pourcentage
                     dose_init = plan_initial[3]
                     frac_init = plan_initial[4]
-                    budget_theorique = (dose_init * frac_init) + 0.5
+                    dose_totale_prescrite = dose_init * frac_init
+                    budget_theorique = dose_totale_prescrite * (1 + (seuil_alerte / 100.0))
                     
-                    # Test des conditions d'alerte
+                    # On ne teste plus que la condition d'alerte pour le % trop haut
                     alerte_erreur = erreur_actuelle > seuil_alerte
-                    dose_reelle_seance = dose_actuelle * (1 + (erreur_actuelle / 100.0))
-                    alerte_seances = (dose_reelle_seance * frac_restantes) > budget_theorique
                     
-                    # Définition du texte d'alerte spécifique
-                    if alerte_erreur and alerte_seances:
-                        statut = "🔴 % Trop haut & Dépassement seuil suspecté"
-                    elif alerte_erreur:
+                    if alerte_erreur:
                         statut = "🔴 % Trop haut"
-                    elif alerte_seances:
-                        statut = "🔴 Dépassement seuil suspecté"
                     else:
                         statut = "🟢 Conforme"
                     
@@ -1234,8 +1224,3 @@ elif st.session_state.vue_actuelle == "Dossier":
             })
             
         display_dashboard(raw_data_sql)
-
-
-
-
-        # test push ded zd 
