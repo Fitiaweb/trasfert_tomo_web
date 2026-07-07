@@ -1,4 +1,5 @@
 # region 1 - Importation des bibliothèques
+import re                         # Pour la détection intelligente de texte (Regex)
 import pydicom as dcm                # Pour lire et manipuler les fichiers médicaux DICOM
 import numpy as np                # Pour les calculs mathématiques et la gestion des matrices
 import pandas as pd               # Pour manipuler les tableaux de données
@@ -80,11 +81,24 @@ init_db() # Appelle la fonction pour s'assurer que la BDD est prête au lancemen
 def harmoniser_base_de_donnees():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    # On remplace proprement dans toute la table
     cursor.execute("UPDATE SESSIONS SET Treatment_Site = 'Hémato' WHERE Treatment_Site = 'Hémato & Ganglionnaire'")
+    cursor.execute("UPDATE SESSIONS SET Machine = 'Ancienne Tomo4' WHERE Machine IN ('210462', 'Tomo4')")
+    cursor.execute("UPDATE SESSIONS SET Treatment_Site = 'TBI' WHERE Raw_Treatment_Site LIKE '%FF%' OR Raw_Treatment_Site LIKE '%HF%' OR Raw_Treatment_Site LIKE '%TBI%'")
+    cursor.execute("UPDATE SESSIONS SET Treatment_Site = 'CSI' WHERE Raw_Treatment_Site LIKE '%CSI%' OR Raw_Treatment_Site LIKE '%cranio%' OR Raw_Treatment_Site LIKE '%spinal%'")
+    
+    # NOUVEAU : Nettoyage plus large pour toutes les façons d'écrire R1 et R2
+    cursor.execute("""
+        UPDATE SESSIONS SET Treatment_Site = Treatment_Site || ' - R1' 
+        WHERE (Raw_Treatment_Site LIKE '%_R1%' OR Raw_Treatment_Site LIKE '%_R01%' OR Raw_Treatment_Site LIKE '%_R_01%' OR Raw_Treatment_Site LIKE '%_R_1%') 
+        AND Treatment_Site NOT LIKE '%- R1%'
+    """)
+    cursor.execute("""
+        UPDATE SESSIONS SET Treatment_Site = Treatment_Site || ' - R2' 
+        WHERE (Raw_Treatment_Site LIKE '%_R2%' OR Raw_Treatment_Site LIKE '%_R02%' OR Raw_Treatment_Site LIKE '%_R_02%' OR Raw_Treatment_Site LIKE '%_R_2%') 
+        AND Treatment_Site NOT LIKE '%- R2%'
+    """)
     conn.commit()
     conn.close()
-
 # Appel à ajouter une fois après l'init_db()
 harmoniser_base_de_donnees()
 
@@ -177,18 +191,34 @@ def general_info(plan):
         texte_brut = ""
 
     # region 9 - AUTO-CATÉGORISATION
-    texte_minuscule = texte_brut.lower()    # Convertit tout en minuscules pour s'affranchir de la casse
-    plan_info["treatment_site"] = "Inconnu" # Valeur par défaut si aucun mot-clé ne matche
+    texte_minuscule = texte_brut.lower()    
+    plan_info["treatment_site"] = "Inconnu" 
     
-    for category, keywords in CATEGORIES_DICT.items():
-        if any(mot in texte_minuscule for mot in keywords):
-            plan_info["treatment_site"] = category
-            break                           # On stoppe la recherche dès la première correspondance
+    if any(mot in texte_minuscule for mot in ["_ff", "_hf", "ff_", "hf_", "tbi", "total body"]):
+        plan_info["treatment_site"] = "TBI"
+    elif any(mot in texte_minuscule for mot in ["csi", "cranio", "spinal"]):
+        plan_info["treatment_site"] = "CSI"
+    else:
+        for category, keywords in CATEGORIES_DICT.items():
+            if any(mot in texte_minuscule for mot in keywords):
+                plan_info["treatment_site"] = category
+                break                              
+                
+    # 3. Détection intelligente des replanifications (R1, R_01, R01, r_1...)
+    # Cherche _, - ou espace, suivi de 'r', optionnellement un '_', optionnellement un '0', puis un chiffre de 1 à 9
+    match = re.search(r"[-_ ]r_?0?([1-9])", texte_minuscule)
+    if match:
+        num_replan = match.group(1) # Extrait juste le chiffre pur (ex: "1" à partir de "_r_01")
+        plan_info["treatment_site"] += f" - R{num_replan}"
     # endregion
 
     # region 10 - mapping
     # Association entre le numéro de série physique de l'appareil et son nom d'usage dans le service
-    serial_mapping = {"4010012": "Tomo2", "210462": "Tomo4", "4010710": "Radi7"} 
+    serial_mapping = {
+        "4010012": "Tomo2", 
+        "4010710": "Radi7",
+        "210462": "Ancienne Tomo4" # Géré pour l'historique ou les exports par erreur
+    } 
     try:
         raw_serial = str(plan.DeviceSerialNumber) 
         plan_info["machine_nb"] = serial_mapping.get(raw_serial, raw_serial)
@@ -196,7 +226,7 @@ def general_info(plan):
         plan_info["machine_nb"] = "Unknown"
         
     return plan_info
-# endregion
+    # endregion
 
 # region 11 - Traitement des fichiers DICOM
 def delivery_info(plan): 
@@ -235,7 +265,7 @@ def get_error_shift(sinogram, delivery):
     cond1 = LOT_sino < (maxLOT - 1)  
     cond2 = LOT_sino > (PT - thresh) 
     row, col = np.where(cond1 & cond2) 
-                                            
+                                               
     for i in range(len(row)):
         if row[i] < (LOT_sino.shape[0] - 1):             
             if (LOT_sino[row[i]+1, col[i]] > (PT - 20)): 
@@ -366,7 +396,7 @@ def display_dashboard(raw_data):
     patient_id = raw_data[0]['ID']
     nb_frac_ref = raw_data[0]['Nb_Frac']
     site_traitement = raw_data[0].get('Site', 'Inconnu')  
-    site_brut = raw_data[0].get('Raw_Site', 'Inconnu')    
+    site_brut = raw_data[0].get('Raw_Site', 'Inconnu')   
     
     html_header = f"""
     <div style="background-color: #f8f9fa; padding: 15px 25px; border-radius: 8px; border-left: 6px solid #1f77b4; box-shadow: 0 2px 4px rgba(0,0,0,0.05); margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center;">
@@ -395,7 +425,7 @@ def display_dashboard(raw_data):
         st.markdown("<small style='color: #6c757d;'>Si le nom récupéré du DICOM comporte une faute de frappe ou est illisible, vous pouvez forcer un nom standard ici.</small>", unsafe_allow_html=True)
         col1, col2 = st.columns([3, 1])
         
-        liste_sites_propres = list(CATEGORIES_DICT.keys()) + ["Autre", "Inconnu"]
+        liste_sites_propres = list(CATEGORIES_DICT.keys()) + ["TBI", "CSI", "Autre", "Inconnu"]
 
         if site_traitement not in liste_sites_propres:
             options_affichage = [site_traitement] + liste_sites_propres
@@ -474,9 +504,9 @@ def display_dashboard(raw_data):
             "Date": date_display, 
             "Machine": item['Machine'],
             "Fractions Réalisées": fractions_done,
-            "Dose Prescrite (Gy/séance)": f"{dose_nominal:.2f}", # Modifié ici
+            "Dose Prescrite (Gy/séance)": f"{dose_nominal:.2f}", 
             "Erreur Séance (%)": f"{error_session_pct:.2f}" if index > 0 else "-",
-            "Dose Délivrée (Gy/séance)": f"{actual_dose_session:.2f}" if index > 0 else f"{dose_nominal:.2f}", # Modifié ici
+            "Dose Délivrée (Gy/séance)": f"{actual_dose_session:.2f}" if index > 0 else f"{dose_nominal:.2f}", 
             "Dose Totale Étape (Gy)": f"{dose_totale_etape:.2f}",
             "Dose Cumulée (Gy)": f"{total_cumulated_dose:.2f}", 
             "Commentaire": comment, 
@@ -500,8 +530,9 @@ def display_dashboard(raw_data):
             cell_style = line_style 
             if col == 'Machine':
                 if row['Machine'] == 'Tomo2': cell_style = 'background-color: #bbdefb; color: #000000; font-weight: bold;' 
-                elif row['Machine'] == 'Tomo4': cell_style = 'background-color: #ffcdd2; color: #000000; font-weight: bold;' 
                 elif row['Machine'] == 'Radi7': cell_style = 'background-color: #c8e6c9; color: #000000; font-weight: bold;' 
+                # Style gris pour l'ancienne machine
+                elif row['Machine'] in ['Tomo4', 'Ancienne Tomo4']: cell_style = 'background-color: #e0e0e0; color: #6c757d; font-style: italic;' 
             styles.append(cell_style)
         return styles
     # endregion
@@ -532,75 +563,57 @@ def display_dashboard(raw_data):
 
     col_graph1, col_graph2 = st.columns([1, 1]) 
 
-    # region 23 - Bloc de gauche : PRÉVISION DE FIN DE TRAITEMENT
+        # region 23 - Bloc de gauche : PRÉVISION DE FIN DE TRAITEMENT
     with col_graph1:
+        alerte_message = "Traitement en cours ou terminé."  # valeur par défaut pour le PDF
+
         if len(df) > 0:
             last_session_df = df.iloc[-1]
-            budget_max =  last_session_df['_Budget_Total']
+            budget_max = last_session_df['_Budget_Total']
             current_dose = last_session_df['_Cumul_Val']
-            st.subheader("Prévision de fin de traitement")
-            alerte_message = ""
 
             if len(df) > 1:
                 machine_actuelle = last_session_df['Machine']
-                machine_initiale = raw_data[0]['Machine'] # Récupère la machine d'origine du plan initial
+                machine_initiale = raw_data[0]['Machine']  # Récupère la machine d'origine du plan initial
                 dose_nom = float(last_session_df['_Dose_Nom_Exact'])
                 dose_err = float(last_session_df['_Dose_Err_Exact'])
-                
+
                 total_done_simul = sum(fractions_done_list)
                 remain = nb_frac_ref - total_done_simul
-                
-                max_sessions_possibles = get_max_sessions_strictly_inferior(budget_max, current_dose, remain, dose_nom, dose_err)
-                
+
+                max_sessions_possibles = get_max_sessions_strictly_inferior(
+                    budget_max, current_dose, remain, dose_nom, dose_err
+                )
+
                 if remain > 0:
                     # Calcul de la répartition exacte des séances restantes
                     if dose_err > dose_nom:
                         if max_sessions_possibles == remain:
-                            alerte_bg = "#d4edda" 
-                            alerte_text = "#155724"
-                            alerte_message = f"<b>Rythme Conforme :</b> Le patient peut terminer son protocole sur la nouvelle machine sans dépasser la limite de dose."
                             seances_machine_actuelle = remain
                             seances_machine_initiale = 0
                         else:
-                            alerte_bg = "#f8d7da" 
-                            alerte_text = "#721c24"
                             transfer_back = remain - max_sessions_possibles
-                            dose_finale_projetee = current_dose + (max_sessions_possibles * dose_err) + (transfer_back * dose_nom)
-                            alerte_message = f"<b>ALERTE SURDOSE :</b> Rester sur {machine_actuelle} ({dose_err:.2f} Gy/séance) dépassera la limite de dose autorisée. Un retour sur la machine d'origine est obligatoire pour les dernières séances." # Modifié ici
                             seances_machine_actuelle = max_sessions_possibles
                             seances_machine_initiale = transfer_back
                     else:
-                        budget_remaining = float(f"{budget_max:.2f}") - float(f"{current_dose:.2f}")
-                        total_possible = int(budget_remaining / dose_err) if dose_err > 0 else 0
-                        
-                        if total_possible >= remain:
-                            alerte_bg = "#d4edda" 
-                            alerte_text = "#155724"
-                            alerte_message = f"<b>Rythme Conforme :</b> Le patient peut terminer son protocole sur la nouvelle machine sans dépasser la limite de dose."
-                            seances_machine_actuelle = remain
-                            seances_machine_initiale = 0
-                        else:
-                            alerte_bg = "#fff3cd" 
-                            alerte_text = "#856404"
-                            gain = total_possible - remain
-                            alerte_message = f"<b>SOUS-DOSAGE DETECTÉ :</b> La {machine_actuelle} délivrant moins que prévu, la dose cible ne sera pas atteinte. Il y a une marge pour rajouter <b>+{gain} séance(s)</b>."
-                            seances_machine_actuelle = remain
-                            seances_machine_initiale = 0
+                        seances_machine_actuelle = remain
+                        seances_machine_initiale = 0
 
-                    # 1. Affichage du bandeau d'alerte textuel
-                    html_alerte = f"""
-                    <div style="background-color: {alerte_bg}; padding: 16px; border-radius: 8px; color: {alerte_text}; margin-top: 10px; border: 1px solid {alerte_text}; margin-bottom: 20px;">
-                        {alerte_message}
-                    </div>
-                    """
-                    st.markdown(html_alerte, unsafe_allow_html=True)
-                    
-                    # 2. Affichage des deux badges de répartition (WYSIWYG et ultra clair)
-                    st.markdown("<h5 style='font-size: 15px; color: #495057; font-weight: 600; margin-bottom: 10px;'>Planification des séances restantes :</h5>", unsafe_allow_html=True)
+                    # Texte utilisé pour le PDF
+                    alerte_message = (
+                        f"Commentaire : Le patient peut faire {seances_machine_actuelle} séance(s) "
+                        f"sur {machine_actuelle} et {seances_machine_initiale} séance(s) restante(s) "
+                        f"doivent être faites sur {machine_initiale}."
+                    )
+
+                    # Affichage des deux badges de répartition
+                    st.markdown(
+                        "<h5 style='font-size: 15px; color: #495057; font-weight: 600; margin-bottom: 10px;'>Planification des séances restantes :</h5>",
+                        unsafe_allow_html=True
+                    )
                     col_cards1, col_cards2 = st.columns(2)
-                    
+
                     with col_cards2:
-                        # Si situation d'alerte, on colore le badge en rouge, sinon en vert conforme
                         color_actuelle = "#c62828" if (dose_err > dose_nom and max_sessions_possibles < remain) else "#2e7d32"
                         bg_actuelle = "#ffebee" if (dose_err > dose_nom and max_sessions_possibles < remain) else "#e8f5e9"
                         st.markdown(f"""
@@ -609,9 +622,8 @@ def display_dashboard(raw_data):
                             <h2 style="margin: 5px 0 0 0; color: {color_actuelle}; font-size: 32px; font-weight: 800;">{seances_machine_actuelle} <span style='font-size: 18px; font-weight: normal;'>séance(s)</span></h2>
                         </div>
                         """, unsafe_allow_html=True)
-                        
+
                     with col_cards1:
-                        # Si des séances doivent retourner sur la machine initiale, on l'allume en bleu, sinon gris neutre (0 séance)
                         color_initiale = "#1565c0" if seances_machine_initiale > 0 else "#6c757d"
                         bg_initiale = "#e3f2fd" if seances_machine_initiale > 0 else "#f8f9fa"
                         st.markdown(f"""
@@ -622,30 +634,15 @@ def display_dashboard(raw_data):
                         """, unsafe_allow_html=True)
                 else:
                     if float(f"{current_dose:.2f}") >= float(f"{budget_max:.2f}"):
-                        st.error(f"ALERTE SURDOSE : Le traitement est terminé mais la dose totale ({current_dose:.2f} Gy) atteint ou dépasse le budget limite de {budget_max:.2f} Gy.")
+                        alerte_message = f"ALERTE SURDOSE : Le traitement est terminé mais la dose totale ({current_dose:.2f} Gy) atteint ou dépasse le budget limite de {budget_max:.2f} Gy."
+                        st.error(alerte_message)
                     else:
-                        st.success("Le traitement est théoriquement terminé et conforme.")
+                        alerte_message = "Le traitement est théoriquement terminé et conforme."
+                        st.success(alerte_message)
             else:
-                st.info(f"Le patient n'a subi aucun transfert. Il reste {nb_frac_ref - sum(fractions_done_list)} séances prévues sur la machine d'origine.")
+                alerte_message = f"Le patient n'a subi aucun transfert. Il reste {nb_frac_ref - sum(fractions_done_list)} séances prévues sur la machine d'origine."
+                st.info(alerte_message)
 
-            alerte_message = "Traitement en cours ou termine."
-
-            if len(df) > 1:
-                machine_actuelle = last_session_df['Machine']
-                machine_initiale = raw_data[0]['Machine']
-                dose_nom = float(last_session_df['_Dose_Nom_Exact'])
-                dose_err = float(last_session_df['_Dose_Err_Exact'])
-                
-                total_done_simul = sum(fractions_done_list)
-                remain = nb_frac_ref - total_done_simul
-                
-                max_sessions_possibles = get_max_sessions_strictly_inferior(budget_max, current_dose, remain, dose_nom, dose_err)
-                
-                
-                alerte_message = f"Commentaire : Le patient peut faire {max_sessions_possibles} seances sur {machine_actuelle} et {remain - max_sessions_possibles} seance(s) restantes doivent etre faites sur {machine_initiale}."
-                        
-            
-           
             st.markdown("<br><hr><br>", unsafe_allow_html=True)
     # endregion
 
@@ -905,6 +902,8 @@ if "vue_actuelle" not in st.session_state:
     st.session_state.vue_actuelle = "Accueil" 
 if "patient_cible" not in st.session_state:
     st.session_state.patient_cible = None
+if "site_cible" not in st.session_state:
+    st.session_state.site_cible = None
 # endregion
 
 # region 31 - MENU DE NAVIGATION Accueil & Statistiques
@@ -912,10 +911,12 @@ if st.session_state.vue_actuelle == "Accueil":
     st.markdown("### Suivi transfert patient")
     
     seuil_alerte = st.number_input(
-        "Définir le seuil d'alerte clinique par transfert (%) :", 
-        min_value=0.0, max_value=10.0, value=1.5, step=0.1, key="seuil_global",
-        help="Seuil de tolérance pour une séance individuelle."
+    "Définir le seuil d'alerte clinique par transfert (%) :", 
+    min_value=0.0, max_value=10.0, value=1.5, step=0.1, key="seuil_global",
+    help="Seuil de tolérance pour une séance individuelle."
     )
+    seuil_alerte = round(seuil_alerte, 2)  # <-- sécurise la valeur contre les erreurs de float
+    st.session_state["seuil_global_val"] = seuil_alerte
     st.session_state["seuil_global_val"] = seuil_alerte
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -941,15 +942,19 @@ if st.session_state.vue_actuelle == "Accueil":
             patients_dict = {}
             for row in toutes_sessions:
                 pid = row[0]
-                if pid not in patients_dict: patients_dict[pid] = []
-                patients_dict[pid].append(row)
+                site = row[6] # Récupère la localisation (ex: ORL - R1)
+                cle_dossier = f"{pid}_{site}" # Clé unique !
+                
+                if cle_dossier not in patients_dict: patients_dict[cle_dossier] = []
+                patients_dict[cle_dossier].append(row)
             
             tableau_final = []
             
-            for pid, sessions in patients_dict.items():
+            for cle_dossier, sessions in patients_dict.items():
                 plan_initial = sessions[0]
                 plan_actuel = sessions[-1] 
                 
+                pid = plan_actuel[0]
                 nom_patient = plan_actuel[1]
                 machine_actuelle = plan_actuel[2]
                 dose_actuelle = float(plan_actuel[3])
@@ -1006,7 +1011,7 @@ if st.session_state.vue_actuelle == "Accueil":
             
             df_recap = pd.DataFrame(tableau_final)
             
-            # Application de l'ordre de tes colonnes (sans l'ancienne colonne de max séances)
+            # Application de l'ordre de tes colonnes
             ordre_recap = [
                 "Date (Dernier import)", "ID Patient", "Nom", 
                 "Statut", "Localisation", "Machine initiale", "Erreur Transfert"
@@ -1024,7 +1029,6 @@ if st.session_state.vue_actuelle == "Accueil":
             
             st.info("**Navigation :** Cochez la case à gauche pour ouvrir le dossier.")
             
-            # C'est ici que l'on applique tes largeurs de colonnes personnalisées !
             event = st.dataframe(
                 df_recap.style.apply(colorer_statut, axis=1), 
                 use_container_width=True, 
@@ -1040,13 +1044,18 @@ if st.session_state.vue_actuelle == "Accueil":
             )
             
             if event.selection.rows:
-                st.session_state.patient_cible = df_recap.iloc[event.selection.rows[0]]["ID Patient"]
+                row_selected = df_recap.iloc[event.selection.rows[0]]
+                st.session_state.patient_cible = row_selected["ID Patient"]
+                st.session_state.site_cible = row_selected["Localisation"]
                 st.session_state.vue_actuelle = "Dossier"
                 st.rerun() 
         
         st.markdown("<br><hr>", unsafe_allow_html=True)
         st.markdown("### Statistiques Globales")
-        # Onglet Physique vs Erreur supprimé ici
+
+        df_stats = df_stats[~df_stats['Machine'].isin(['Tomo4', 'Ancienne Tomo4', '210462'])]
+        # ------------------------------------------------------------------------------------
+
         sub_tab_loc, sub_tab_mach, sub_tab_time = st.tabs(["Par Localisation", "Par Sens de Transfert", "Évolution dans le Temps"])
 # endregion
 
@@ -1125,7 +1134,7 @@ if st.session_state.vue_actuelle == "Accueil":
                 
                 col_kpi1, col_kpi2, col_kpi3 = st.columns(3)
                 col_kpi1.metric("Total de Transferts", total_focus)
-                col_kpi2.metric(f"Transferts > {seuil_alerte}% (Alerte)", int(depassements_focus))
+                col_kpi2.metric(f"Transferts > {seuil_alerte :.2f}% (Alerte)", int(depassements_focus))
                 col_kpi3.metric("Taux d'alerte", f"{taux_focus:.1f} %")
                 
                 st.markdown("---")
@@ -1260,18 +1269,24 @@ elif st.session_state.vue_actuelle == "Dossier":
     if st.button("Retour au tableau de bord général"):
         st.session_state.vue_actuelle = "Accueil"
         st.session_state.patient_cible = None
+        st.session_state.site_cible = None
         st.rerun()
 
     st.markdown("---")
     id_target = st.session_state.patient_cible
+    site_target = st.session_state.get("site_cible", None)
     
     with st.spinner("Récupération du dossier..."): 
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
         
-        cursor.execute("SELECT Treatment_Site FROM SESSIONS WHERE Patient_ID = ? ORDER BY Date_Time DESC LIMIT 1", (id_target,))
-        latest_site_row = cursor.fetchone()
-        latest_site = latest_site_row[0] if latest_site_row else "Inconnu"
+        # On utilise le site cliqué par l'utilisateur
+        if site_target:
+            latest_site = site_target
+        else:
+            cursor.execute("SELECT Treatment_Site FROM SESSIONS WHERE Patient_ID = ? ORDER BY Date_Time DESC LIMIT 1", (id_target,))
+            latest_site_row = cursor.fetchone()
+            latest_site = latest_site_row[0] if latest_site_row else "Inconnu"
         
         cursor.execute("""
             SELECT s.Session_ID, s.Display_Date, s.Machine, s.Dose_Gy, s.Nb_Frac, s.uLCT, s.Error_pct, s.Profile_JSON, s.Date_Time, p.Full_Name, s.CS_mm_s, s.GP_s, s.Treatment_Site, s.Raw_Treatment_Site, s.Fractions_Done 
@@ -1286,7 +1301,7 @@ elif st.session_state.vue_actuelle == "Dossier":
         
         raw_data_sql = []
         for row in session_lines:
-            raw_data_sql.append({
+            row_dict = {
                 'Session_ID': row[0],
                 'Date': row[1], 
                 'Machine': row[2], 
@@ -1303,7 +1318,26 @@ elif st.session_state.vue_actuelle == "Dossier":
                 'Site': str(row[12]).replace('Hémato & Ganglionnaire', 'Hémato'), 
                 'Raw_Site': row[13],
                 'Fractions_Done': row[14]
-            })
+            }
             
+            # --- FUSION DES TBI/CSI (FF + HF ou plans multiples) ---
+            # Si on a déjà une ligne ET que c'est la même machine ET le même jour (les 8 premiers caractères de sort_key = YYYYMMDD)
+            if len(raw_data_sql) > 0 and raw_data_sql[-1]['Machine'] == row_dict['Machine'] and raw_data_sql[-1]['sort_key'][:8] == row_dict['sort_key'][:8]:
+                
+                # 1. On moyenne l'erreur des plans fusionnés
+                prev_err = float(raw_data_sql[-1]['Session Error (%)'])
+                curr_err = float(row_dict['Session Error (%)'])
+                raw_data_sql[-1]['Session Error (%)'] = (prev_err + curr_err) / 2.0
+                
+                # 2. On combine les noms bruts
+                if row_dict['Raw_Site'] not in raw_data_sql[-1]['Raw_Site']:
+                    raw_data_sql[-1]['Raw_Site'] += f" + {row_dict['Raw_Site']}"
+                    
+                # 3. On rallonge le profil d'erreur graphique
+                raw_data_sql[-1]['Profile_Error'].extend(row_dict['Profile_Error'])
+                
+            else:
+                raw_data_sql.append(row_dict)
+                
         display_dashboard(raw_data_sql)
 # endregion
