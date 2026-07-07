@@ -8,3 +8,5 @@ Cérébral=cerveau, encephale, crane, cereb, stereotaxie
 Thorax & Poumon=poumon, thorax, mediastin
 Abdomen=abdomen, foie, pancreas, estomac
 Hémato & Ganglionnaire=hodgkin, lymphome, manteau, ganglion, rtni
+TBI = ff, hf, tbi, total body
+CSI = csi, cranio, spinal
