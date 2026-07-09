@@ -125,9 +125,7 @@ def load_categories(filepath="categories.txt"):
 CATEGORIES_DICT = load_categories()
 # endregion
 
-# region 6 - Données Globales (CACHE)
-# @st.cache_data agit comme la "mémoire vive" (RAM) de l'application.
-@st.cache_data
+# region 6 - Données Globales (Lecture directe en temps réel)
 def charger_donnees_globales():
     conn = sqlite3.connect(DB_NAME)
     query = "SELECT Patient_ID, Date_Time, Machine, Treatment_Site, Raw_Treatment_Site, Error_pct, GP_s, CS_mm_s FROM SESSIONS"
@@ -446,7 +444,12 @@ def display_dashboard(raw_data):
                 conn_update.commit()
                 conn_update.close()
                 time.sleep(0.5) 
-                st.rerun() 
+                
+                # --- LA CORRECTION EST ICI ---
+                # On vide la mémoire de Streamlit pour forcer la mise à jour des statistiques
+                charger_donnees_globales.clear() 
+                
+                st.rerun()
     st.markdown("<br>", unsafe_allow_html=True)
     # endregion
 
@@ -998,7 +1001,7 @@ if st.session_state.vue_actuelle == "Accueil":
                     "Nom": nom_patient,
                     "Localisation": site,
                     "Machine initiale": plan_initial[2],
-                    "erreur estimé": erreur_str,
+                    "erreur estimée": erreur_str,
                     "Statut": statut
                 })
             
@@ -1008,7 +1011,7 @@ if st.session_state.vue_actuelle == "Accueil":
             df_recap = df_recap.sort_values(by="Sort_Date", ascending=False)
             
             # Application de l'ordre de tes colonnes (Sort_Date est exclue, donc elle reste invisible)
-            ordre_recap = ["Date (Dernier import)", "ID Patient", "Nom", "Statut", "Localisation", "Machine initiale", "erreur estimé"]
+            ordre_recap = ["Date (Dernier import)", "ID Patient", "Nom", "Statut", "Localisation", "Machine initiale", "erreur estimée"]
             df_recap = df_recap[[col for col in ordre_recap if col in df_recap.columns]]
             
             def colorer_statut(row):
@@ -1043,6 +1046,112 @@ if st.session_state.vue_actuelle == "Accueil":
                 st.session_state.vue_actuelle = "Dossier"
                 st.rerun() 
         
+
+                # --- DÉBUT DU NOUVEAU BLOC : EXPORT RAPIDE ---
+            st.markdown("###  Export Rapide (PDF par défaut)")
+           
+            
+            col_exp1, col_exp2 = st.columns([3, 1])
+            with col_exp1:
+                # Construit une liste lisible pour le menu déroulant
+                liste_noms = df_recap['ID Patient'] + " - " + df_recap['Nom'] + " (" + df_recap['Localisation'] + ")"
+                choix_export = st.selectbox("Sélectionnez le dossier à exporter :", liste_noms, label_visibility="collapsed")
+            
+            with col_exp2:
+                if choix_export:
+                    # Extraction de l'ID et du site depuis le texte sélectionné
+                    id_export = choix_export.split(" - ")[0]
+                    site_export = choix_export.split("(")[-1].replace(")", "")
+                    
+                    # Requête ultra-rapide pour récupérer juste l'essentiel du patient
+                    conn_exp = sqlite3.connect(DB_NAME)
+                    cursor_exp = conn_exp.cursor()
+                    cursor_exp.execute("""
+                        SELECT s.Date_Time, s.Machine, s.Dose_Gy, s.Nb_Frac, s.Error_pct, p.Full_Name
+                        FROM SESSIONS s
+                        JOIN PATIENTS p ON s.Patient_ID = p.Patient_ID
+                        WHERE s.Patient_ID = ? AND s.Treatment_Site = ?
+                        ORDER BY s.Date_Time ASC
+                    """, (id_export, site_export))
+                    lignes_exp = cursor_exp.fetchall()
+                    conn_exp.close()
+                    
+                    if len(lignes_exp) > 0:
+                        nom_exp = lignes_exp[0][5]
+                        dose_nom_ref = float(lignes_exp[0][2])
+                        nb_frac_ref_exp = lignes_exp[0][3]
+                        budget_max_exp = (dose_nom_ref * nb_frac_ref_exp) * (1 + (seuil_alerte / 100.0))
+                        
+                        # Reconstruction d'un historique formaté "vide" (0 séance) pour la fonction PDF
+                        history_data = []
+                        for idx, ligne in enumerate(lignes_exp):
+                            date_disp = f"{str(ligne[0])[6:8]}/{str(ligne[0])[4:6]}/{str(ligne[0])[0:4]}"
+                            err_pct = float(ligne[4]) if ligne[4] else 0.0
+                            dose_seance = dose_nom_ref * (1 + (err_pct/100.0)) if idx > 0 else dose_nom_ref
+                            
+                            history_data.append({
+                                "Date": date_disp + (" (Initiale)" if idx == 0 else ""),
+                                "Machine": ligne[1],
+                                "Fractions Réalisées": 0,  # Valeur forcée à 0
+                                "Erreur Séance (%)": f"{err_pct:.2f}" if idx > 0 else "-",
+                                "Dose Délivrée (Gy/séance)": f"{dose_seance:.2f}",
+                                "Dose Totale Cumulée (Gy)": "0.00"
+                            })
+                        
+                        df_history_exp = pd.DataFrame(history_data)
+                        
+                        # --- NOUVEAU : CALCUL DU MESSAGE MAX/MIN POUR LE PDF ---
+                        if len(lignes_exp) > 1:
+                            machine_initiale = lignes_exp[0][1]
+                            machine_actuelle = lignes_exp[-1][1]
+                            err_actuelle = float(lignes_exp[-1][4])
+                            dose_err_actuelle = dose_nom_ref * (1 + (err_actuelle / 100.0))
+                            
+                            # On simule 0 séance réalisée
+                            remain = nb_frac_ref_exp
+                            current_dose_sim = 0.0
+                            
+                            max_sessions_possibles = get_max_sessions_strictly_inferior(
+                                budget_max_exp, current_dose_sim, remain, dose_nom_ref, dose_err_actuelle
+                            )
+                            
+                            if dose_err_actuelle > dose_nom_ref:
+                                if max_sessions_possibles == remain:
+                                    seances_machine_actuelle = remain
+                                    seances_machine_initiale = 0
+                                else:
+                                    transfer_back = remain - max_sessions_possibles
+                                    seances_machine_actuelle = max_sessions_possibles
+                                    seances_machine_initiale = transfer_back
+                            else:
+                                seances_machine_actuelle = remain
+                                seances_machine_initiale = 0
+                                
+                            alerte_msg = (
+                                "Note (Export Rapide) : Prévision calculée avec 0 séance validée manuellement.\n"
+                                f"-> Maximum de {seances_machine_actuelle} séance(s) sur {machine_actuelle} (Machine de destination)\n"
+                                f"-> Minimum de {seances_machine_initiale} séance(s) sur {machine_initiale} (Machine d'origine)"
+                            )
+                        else:
+                            alerte_msg = f"Le patient n'a subi aucun transfert. Il reste {nb_frac_ref_exp} séances prévues sur la machine d'origine."
+                        # -------------------------------------------------------
+                        
+                        # Appel de la fonction de génération PDF
+                        pdf_bytes_accueil = generer_rapport_pdf(
+                            patient_name=nom_exp, patient_id=id_export, site=site_export, 
+                            budget_max=budget_max_exp, current_dose=0.0, seuil=seuil_alerte, 
+                            df_history=df_history_exp, alerte_message=alerte_msg
+                        )
+                        
+                        # Bouton de téléchargement dynamique
+                        st.download_button(
+                            label=" Télécharger le PDF",
+                            data=pdf_bytes_accueil,
+                            file_name=f"Rapport_Rapide_{id_export}.pdf",
+                            mime="application/pdf",
+                            use_container_width=True
+                        )
+            # --- FIN DU NOUVEAU BLOC ---
         st.markdown("<br><hr>", unsafe_allow_html=True)
         st.markdown("### Statistiques Globales")
 
@@ -1054,10 +1163,10 @@ if st.session_state.vue_actuelle == "Accueil":
 
        # region 32 - SOUS-ONGLET A : Localisation
         with sub_tab_loc:
-             st.markdown("<small style='color: #6c757d;'>Erreur moyenne des transferts par zone traitée (Plans initiaux exclus).</small><br>", unsafe_allow_html=True)
+             
             
              df_loc = df_stats.dropna(subset=['Treatment_Site']).copy()
-             df_loc['session_num'] = df_loc.groupby('Patient_ID').cumcount() 
+             df_loc['session_num'] = df_loc.groupby(['Patient_ID', 'Treatment_Site']).cumcount() 
              df_transfers_loc = df_loc[df_loc['session_num'] > 0]            
             
              if len(df_transfers_loc) == 0:
@@ -1101,10 +1210,10 @@ if st.session_state.vue_actuelle == "Accueil":
 
         # region 33 - SOUS-ONGLET B : Sens de Transfert
         with sub_tab_mach:
-            st.markdown("<small style='color: #6c757d;'>Analyse par trajet de transfert et taux de dépassement du seuil clinique.</small><br>", unsafe_allow_html=True)
+            
 
             df_mach = df_stats.copy()
-            df_mach['Prev_Machine'] = df_mach.groupby('Patient_ID')['Machine'].shift(1)
+            df_mach['Prev_Machine'] = df_mach.groupby(['Patient_ID', 'Treatment_Site'])['Machine'].shift(1)
             df_transitions = df_mach.dropna(subset=['Prev_Machine']).copy()
             df_transitions = df_transitions[df_transitions['Machine'] != df_transitions['Prev_Machine']]
 
@@ -1191,7 +1300,8 @@ if st.session_state.vue_actuelle == "Accueil":
             df_time = df_stats.copy()
 
             df_time = df_time.sort_values(by=['Patient_ID', 'Date_Time'])
-            df_time['session_num'] = df_time.groupby('Patient_ID').cumcount()
+            # Correction des transferts fantômes :
+            df_time['session_num'] = df_time.groupby(['Patient_ID', 'Treatment_Site']).cumcount()
             df_time = df_time[df_time['session_num'] > 0] 
             
             df_time['Date_Clean'] = df_time['Date_Time'].astype(str).str[:14]
@@ -1213,6 +1323,22 @@ if st.session_state.vue_actuelle == "Accueil":
                 df_time['Periode'] = df_time['True_Date'].dt.to_period(freq).dt.to_timestamp()
                 df_trend = df_time.groupby(['Periode', 'Machine'])['Error_pct'].mean().reset_index()
                 
+                # --- NOUVEAU : FORMATAGE EN FRANÇAIS POUR L'ABSCISSE ---
+                mois_fr = {1: 'janvier', 2: 'février', 3: 'mars', 4: 'avril', 5: 'mai', 6: 'juin', 7: 'juillet', 8: 'août', 9: 'septembre', 10: 'octobre', 11: 'novembre', 12: 'décembre'}
+                
+                def formater_date(d, gran):
+                    if gran == "Moyenne par Mois":
+                        return f"Mois de {mois_fr[d.month]}"
+                    elif gran == "Moyenne par Semaine":
+                        return f"Semaine {d.isocalendar()[1]}"
+                    else:
+                        return f"{d.day} {mois_fr[d.month]}"
+                        
+                # On récupère les dates uniques pour configurer l'axe proprement sans doublons
+                dates_uniques = df_trend['Periode'].drop_duplicates().sort_values()
+                labels_propres = [formater_date(d, granularite) for d in dates_uniques]
+                # -------------------------------------------------------
+                
                 st.markdown("#### Evolution de l'erreur (Dernière période vs Précédente)")
                 machines_presentes = sorted(df_trend['Machine'].unique())
                 
@@ -1226,7 +1352,7 @@ if st.session_state.vue_actuelle == "Accueil":
                             delta_err = current_err - previous_err
                             
                             colonnes_kpi[i].metric(
-                                label=f"Tendance {mach}",
+                                label=f"Tendance {mach} ( machine de destination )  ",
                                 value=f"{current_err:.2f} %",
                                 delta=f"{delta_err:+.2f} %",
                                 delta_color="inverse" 
@@ -1234,7 +1360,7 @@ if st.session_state.vue_actuelle == "Accueil":
                         else:
                             current_err = df_mach.iloc[-1]['Error_pct']
                             colonnes_kpi[i].metric(
-                                label=f"Tendance {mach}",
+                                label=f"Tendance {mach} ( machine de destination ) ",
                                 value=f"{current_err:.2f} %",
                                 delta="Donnée unique",
                                 delta_color="off"
@@ -1248,8 +1374,17 @@ if st.session_state.vue_actuelle == "Accueil":
                     color='Machine',            
                     markers=True,                
                     title=f"Évolution Temporelle de l'Erreur ({granularite}) - (Moyenne)",
-                    labels={'Periode': 'Date de traitement', 'Error_pct': 'Erreur Moyenne (%)', 'Machine': 'Machine Tomo'}
+                    labels={'Error_pct': 'Erreur Moyenne (%)', 'Machine': 'Machine Tomo'}
                 )
+                
+                # --- NOUVEAU : APPLICATION DES LABELS SUR LE GRAPHIQUE ---
+                fig_time.update_xaxes(
+                    tickvals=dates_uniques,
+                    ticktext=labels_propres,
+                    tickangle=0 if granularite == "Moyenne par Mois" else -45, # Rotation légère si on affiche les jours
+                    title_text="" # On masque le titre "Periode" pour un rendu plus épuré
+                )
+                # ---------------------------------------------------------
                 
                 fig_time.update_layout(plot_bgcolor='rgba(0,0,0,0)', margin=dict(t=40, b=0, l=0, r=0), font=dict(size=14))
                 fig_time.add_hline(y=seuil_alerte, line_dash="dash", line_color="red", annotation_text=f"Seuil d'alerte ({seuil_alerte}%)")
