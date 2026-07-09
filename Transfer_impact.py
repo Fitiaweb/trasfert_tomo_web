@@ -1,6 +1,6 @@
 # region 1 - Importation des bibliothèques
 import re                         # Pour la détection intelligente de texte (Regex)
-import pydicom as dcm                # Pour lire et manipuler les fichiers médicaux DICOM
+import pydicom as dcm             # Pour lire et manipuler les fichiers médicaux DICOM
 import numpy as np                # Pour les calculs mathématiques et la gestion des matrices
 import pandas as pd               # Pour manipuler les tableaux de données
 import os                         # Pour interagir avec le système de fichiers
@@ -10,7 +10,7 @@ import time                       # Pour ajouter des petites pauses
 import sqlite3                    # Pour gérer la base de données locale SQL
 import json                       # Pour stocker les matrices complexes en texte
 import plotly.express as px       # Pour créer des graphiques statistiques interactifs
-import streamlit as st            # Bibliothèque pour créer l'interface web interactive
+import streamlit as st             # Bibliothèque pour créer l'interface web interactive
 import math                       # Pour les calculs d'arrondis stricts
 from fpdf import FPDF             # Pour générer le rapport PDF
 # endregion
@@ -202,7 +202,7 @@ def general_info(plan):
         for category, keywords in CATEGORIES_DICT.items():
             if any(mot in texte_minuscule for mot in keywords):
                 plan_info["treatment_site"] = category
-                break                              
+                break                               
                 
     # 3. Détection intelligente des replanifications (R1, R_01, R01, r_1...)
     # Cherche _, - ou espace, suivi de 'r', optionnellement un '_', optionnellement un '0', puis un chiffre de 1 à 9
@@ -346,7 +346,7 @@ def generer_rapport_pdf(patient_name, patient_id, site, budget_max, current_dose
     pdf.set_font("helvetica", "B", 12)
     pdf.cell(0, 8, clean_txt("Bilan Dosimetrique Actuel"), ln=True)
     pdf.set_font("helvetica", "", 11)
-    pdf.cell(0, 6, clean_txt(f"Dose Cumulee Estimee : {current_dose:.2f} Gy"), ln=True)
+    pdf.cell(0, 6, clean_txt(f"Estimation dose cumulée  : {current_dose:.2f} Gy"), ln=True)
     pdf.cell(0, 6, clean_txt(f"Dose maximum toleree : {budget_max:.2f} Gy"), ln=True)
     pdf.ln(5)
     
@@ -359,7 +359,7 @@ def generer_rapport_pdf(patient_name, patient_id, site, budget_max, current_dose
     pdf.cell(15, 8, clean_txt("Frac."), border=1)
     pdf.cell(20, 8, clean_txt("Err(%)"), border=1)
     pdf.cell(32, 8, clean_txt("Dose/seance"), border=1)
-    pdf.cell(32, 8, clean_txt("Dose Etape"), border=1)
+    pdf.cell(32, 8, clean_txt("Dose Cumulee"), border=1)
     pdf.ln()
     
     pdf.set_font("helvetica", "", 9)
@@ -369,12 +369,12 @@ def generer_rapport_pdf(patient_name, patient_id, site, budget_max, current_dose
         pdf.cell(15, 8, clean_txt(str(row['Fractions Réalisées'])), border=1)
         pdf.cell(20, 8, clean_txt(str(row['Erreur Séance (%)'])), border=1)
         pdf.cell(32, 8, clean_txt(str(row['Dose Délivrée (Gy/séance)'])), border=1)
-        pdf.cell(32, 8, clean_txt(str(row['Dose Totale Étape (Gy)'])), border=1)
+        pdf.cell(32, 8, clean_txt(str(row['Dose Totale Cumulée (Gy)'])), border=1)
         pdf.ln()
         
     pdf.ln(10)
 
-    # Affichage du statut de fin de traitement (toujours affiché)
+    # Affichage du statut de fin de traitement
     pdf.set_font("helvetica", "B", 12)
     pdf.cell(0, 8, clean_txt("Statut de fin de traitement :"), ln=True)
     pdf.set_font("helvetica", "", 11)
@@ -465,7 +465,7 @@ def display_dashboard(raw_data):
     st.markdown("<br>", unsafe_allow_html=True)
     # endregion
 
-    # region 18 - CALCUL DU BUDGET DOSE
+    # region 18 - CALCUL DOSE MAXIMALE TOLÉRÉE
     seuil_patient = st.session_state.get("seuil_global_val", 1.5)
     total_cumulated_dose = 0.0 
     final_table_data = [] 
@@ -507,8 +507,7 @@ def display_dashboard(raw_data):
             "Dose Prescrite (Gy/séance)": f"{dose_nominal:.2f}", 
             "Erreur Séance (%)": f"{error_session_pct:.2f}" if index > 0 else "-",
             "Dose Délivrée (Gy/séance)": f"{actual_dose_session:.2f}" if index > 0 else f"{dose_nominal:.2f}", 
-            "Dose Totale Étape (Gy)": f"{dose_totale_etape:.2f}",
-            "Dose Cumulée (Gy)": f"{total_cumulated_dose:.2f}", 
+            "Dose Totale Cumulée (Gy)": f"{dose_totale_etape:.2f}", 
             "Commentaire": comment, 
             "_Alert": alert, "_Index": index, "_Cumul_Val": total_cumulated_dose, "_Budget_Total": total_budget_Gy, "_Nb_Frac_Plan": item['Nb_Frac'],
             "_Dose_Nom_Exact": dose_nominal, "_Dose_Err_Exact": actual_dose_session
@@ -601,16 +600,11 @@ def display_dashboard(raw_data):
 
                     # Texte utilisé pour le PDF
                     alerte_message = (
-                        f"Commentaire : Le patient peut faire {seances_machine_actuelle} séance(s) "
-                        f"sur {machine_actuelle} et {seances_machine_initiale} séance(s) restante(s) "
-                        f"doivent être faites sur {machine_initiale}."
+                        f"-> Maximum de {seances_machine_actuelle} séance(s) sur {machine_actuelle} (Machine de destination)\n"
+                        f"-> Minimum de {seances_machine_initiale} séance(s) sur {machine_initiale} (Machine d'origine)"
                     )
 
                     # Affichage des deux badges de répartition
-                    st.markdown(
-                        "<h5 style='font-size: 15px; color: #495057; font-weight: 600; margin-bottom: 10px;'>Planification des séances restantes :</h5>",
-                        unsafe_allow_html=True
-                    )
                     col_cards1, col_cards2 = st.columns(2)
 
                     with col_cards2:
@@ -618,8 +612,8 @@ def display_dashboard(raw_data):
                         bg_actuelle = "#ffebee" if (dose_err > dose_nom and max_sessions_possibles < remain) else "#e8f5e9"
                         st.markdown(f"""
                         <div style="background-color: {bg_actuelle}; border: 2px solid {color_actuelle}; border-radius: 8px; padding: 15px; text-align: center;">
-                            <span style="font-size: 11px; color: #555; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px;">Sur Machine Transfert ({machine_actuelle})</span>
-                            <h2 style="margin: 5px 0 0 0; color: {color_actuelle}; font-size: 32px; font-weight: 800;">{seances_machine_actuelle} <span style='font-size: 18px; font-weight: normal;'>séance(s)</span></h2>
+                            <span style="font-size: 11px; color: #555; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px;">Machine de Destination ({machine_actuelle})</span>
+                            <h2 style="margin: 5px 0 0 0; color: {color_actuelle}; font-size: 26px; font-weight: 800;">Maximum de {seances_machine_actuelle} <span style='font-size: 14px; font-weight: normal;'>séance(s)</span></h2>
                         </div>
                         """, unsafe_allow_html=True)
 
@@ -628,17 +622,17 @@ def display_dashboard(raw_data):
                         bg_initiale = "#e3f2fd" if seances_machine_initiale > 0 else "#f8f9fa"
                         st.markdown(f"""
                         <div style="background-color: {bg_initiale}; border: 2px solid {color_initiale}; border-radius: 8px; padding: 15px; text-align: center;">
-                            <span style="font-size: 11px; color: #555; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px;">Retour Machine Origine ({machine_initiale})</span>
-                            <h2 style="margin: 5px 0 0 0; color: {color_initiale}; font-size: 32px; font-weight: 800;">{seances_machine_initiale} <span style='font-size: 18px; font-weight: normal;'>séance(s)</span></h2>
+                            <span style="font-size: 11px; color: #555; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px;">Machine d'Origine ({machine_initiale})</span>
+                            <h2 style="margin: 5px 0 0 0; color: {color_initiale}; font-size: 26px; font-weight: 800;">Minimum de {seances_machine_initiale} <span style='font-size: 14px; font-weight: normal;'>séance(s)</span></h2>
                         </div>
                         """, unsafe_allow_html=True)
                 else:
                     if float(f"{current_dose:.2f}") >= float(f"{budget_max:.2f}"):
-                        alerte_message = f"ALERTE SURDOSE : Le traitement est terminé mais la dose totale ({current_dose:.2f} Gy) atteint ou dépasse le budget limite de {budget_max:.2f} Gy."
+                        alerte_message = f"ALERTE SURDOSE : Le traitement est terminé mais la dose totale ({current_dose:.2f} Gy) atteint ou dépasse la dose maximale tolérée de {budget_max:.2f} Gy."
                         st.error(alerte_message)
                     else:
-                        alerte_message = "Le traitement est théoriquement terminé et conforme."
-                        st.success(alerte_message)
+                        alerte_message = f"{total_done_simul} séance(s) réalisée(s) sur {nb_frac_ref}."
+                        st.success(f"{alerte_message} Le traitement est théoriquement terminé et conforme.")
             else:
                 alerte_message = f"Le patient n'a subi aucun transfert. Il reste {nb_frac_ref - sum(fractions_done_list)} séances prévues sur la machine d'origine."
                 st.info(alerte_message)
@@ -647,8 +641,6 @@ def display_dashboard(raw_data):
     # endregion
 
     # region 24 - Bloc de gauche : BILAN DOSIMÉTRIQUE CUMULÉ
-            st.subheader("Bilan Dosimétrique Cumulé") 
-
             # Calcul décimal du pourcentage pour la jauge progress (1.0 = 100%)
             percentage = min(current_dose / budget_max, 1.0) if budget_max > 0 else 0.0
             
@@ -663,9 +655,9 @@ def display_dashboard(raw_data):
             
             html_budget = f"""
             <div style='background-color: {bg_color}; padding: 20px; border-radius: 10px; border: 2px solid {text_color}; text-align: center; margin-bottom: 10px;'>
-                <h4 style='color: {text_color}; margin: 0; font-weight: 600;'>Dose Cumulée Estimée</h4>
+                <h4 style='color: {text_color}; margin: 0; font-weight: 600;'>Estimation dose cumulée</h4>
                 <h1 style='color: {text_color}; margin: 5px 0; font-size: 38px;'>{current_dose:.2f} <span style='font-size: 20px; font-weight: normal;'>/ {budget_max:.2f} Gy</span></h1>
-                <p style='margin: 0; color: #555; font-size: 14px;'><i>Limite maximale tolérée : Prescription + {seuil_patient}%</i></p>
+                <p style='margin: 0; color: #555; font-size: 14px;'><i>Dose maximale tolérée : Prescription + {seuil_patient}%</i></p>
             </div>
             """
             st.markdown(html_budget, unsafe_allow_html=True)
@@ -990,9 +982,9 @@ if st.session_state.vue_actuelle == "Accueil":
                     
                     # Fusion des colonnes Séances Max et Statut
                     if alerte_erreur or max_sessions < remain_sim:
-                        statut = f"Alerte : {max_sessions} séance(s) max sur {machine_actuelle}"
+                        statut = f"Alerte : {max_sessions} / {remain_sim} séance(s) max sur {machine_actuelle}"
                     else:
-                        statut = f"Conforme : {remain_sim} séance(s) sur {machine_actuelle}"
+                        statut = f"Conforme : {remain_sim} / {remain_sim} séance(s) sur {machine_actuelle} "
                     
                     erreur_str = f"{erreur_actuelle:.2f} %"
                 else: 
@@ -1001,21 +993,22 @@ if st.session_state.vue_actuelle == "Accueil":
                 
                 tableau_final.append({
                     "Date (Dernier import)": plan_actuel[7],
+                    "Sort_Date": plan_actuel[8],  # NOUVEAU : On récupère la vraie date formatée (YYYYMMDD) pour le tri
                     "ID Patient": pid,
                     "Nom": nom_patient,
                     "Localisation": site,
                     "Machine initiale": plan_initial[2],
-                    "Erreur Transfert": erreur_str,
+                    "erreur estimé": erreur_str,
                     "Statut": statut
                 })
             
             df_recap = pd.DataFrame(tableau_final)
             
-            # Application de l'ordre de tes colonnes
-            ordre_recap = [
-                "Date (Dernier import)", "ID Patient", "Nom", 
-                "Statut", "Localisation", "Machine initiale", "Erreur Transfert"
-            ]
+            # NOUVEAU : Tri chronologique décroissant (les transferts les plus récents en premier)
+            df_recap = df_recap.sort_values(by="Sort_Date", ascending=False)
+            
+            # Application de l'ordre de tes colonnes (Sort_Date est exclue, donc elle reste invisible)
+            ordre_recap = ["Date (Dernier import)", "ID Patient", "Nom", "Statut", "Localisation", "Machine initiale", "erreur estimé"]
             df_recap = df_recap[[col for col in ordre_recap if col in df_recap.columns]]
             
             def colorer_statut(row):
@@ -1090,11 +1083,13 @@ if st.session_state.vue_actuelle == "Accueil":
 
                  fig_loc.update_layout(xaxis_tickangle=-45, plot_bgcolor='rgba(0,0,0,0)', margin=dict(t=40, b=0, l=0, r=0), font=dict(size=14))
                 
-                 # 3. MISE EN FORME DU TEXTE DANS LA BARRE + NETTOYAGE DU SURVOL
+                 
+                 # 3. MISE EN FORME DU TEXTE DANS LA BARRE
                  fig_loc.update_traces(
-                     textfont_size=24,
-                     textposition='inside',
-                     insidetextanchor='middle',
+                     textfont_size=14,            # Réduit un peu si besoin pour que ça rentre
+                     textposition='inside',       # Force le texte à rester dans la barre
+                     insidetextanchor='middle',   # Centre verticalement
+                     textangle=0,                 # <--- C'EST LA CLÉ : Force le texte à 0 degré (horizontal)
                      textfont_color='white',
                      textfont_weight='bold',
                      hovertemplate="<b>%{x}</b><br>Erreur Moyenne : %{y:.2f} %<extra></extra>"
