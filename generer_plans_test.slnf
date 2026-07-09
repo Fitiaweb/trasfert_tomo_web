@@ -1,8 +1,0 @@
-{
-  "solution": {
-    "path": "..\\TransfertTomo\\generer_plans_test\\generer_plans_test.slnx",
-    "projects": [
-      "generer_plans_test.pyproj"
-    ]
-  }
-}
